@@ -125,7 +125,7 @@ serve(async (req: Request) => {
         
         try {
             const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
-            const redirectUrl = `${PUBLIC_URL}/images/${format === 'jpg' ? jpgFilename : gifFilename}`;
+            const redirectUrl = `/images/${format === 'jpg' ? jpgFilename : gifFilename}`;
             
             return new Response(null, {
                 status: 302,
