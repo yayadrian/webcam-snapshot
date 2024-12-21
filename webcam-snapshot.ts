@@ -110,6 +110,35 @@ async function cleanupOldSnapshots() {
 serve(async (req: Request) => {
     const url = new URL(req.url);
     
+    // Add new redirect endpoint
+    if (url.pathname === '/redirect') {
+        const videoSrc = url.searchParams.get('url');
+        const format = url.searchParams.get('format')?.toLowerCase() || 'jpg';
+        
+        if (!videoSrc) {
+            return new Response('Missing url parameter', { status: 400 });
+        }
+        
+        if (format !== 'jpg' && format !== 'gif') {
+            return new Response('Format must be either jpg or gif', { status: 400 });
+        }
+        
+        try {
+            const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
+            const redirectUrl = `${PUBLIC_URL}/images/${format === 'jpg' ? jpgFilename : gifFilename}`;
+            
+            return new Response(null, {
+                status: 302,
+                headers: { 'Location': redirectUrl }
+            });
+        } catch (error) {
+            return new Response(JSON.stringify({ error: error.message }), {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+    }
+    
     // Handle snapshot requests
     if (url.pathname === '/snapshot') {
         const videoSrc = url.searchParams.get('url');
@@ -151,9 +180,18 @@ serve(async (req: Request) => {
     }
     
     // Default route
-    return new Response('Webcam Snapshot Service\nUse /snapshot?url=YOUR_WEBCAM_URL to get a snapshot', {
-        headers: { 'Content-Type': 'text/plain' }
-    });
+    return new Response(
+        'Webcam Snapshot Service\n\n' +
+        'Available endpoints:\n\n' +
+        '1. JSON Response:\n' +
+        '   /snapshot?url=YOUR_WEBCAM_URL\n\n' +
+        '2. Direct Image Redirect:\n' +
+        '   /redirect?url=YOUR_WEBCAM_URL&format=jpg\n' +
+        '   /redirect?url=YOUR_WEBCAM_URL&format=gif\n', 
+        {
+            headers: { 'Content-Type': 'text/plain' }
+        }
+    );
 }, { port: PORT });
 
 // Run cleanup every hour
