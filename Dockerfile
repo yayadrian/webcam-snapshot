@@ -8,10 +8,11 @@ WORKDIR /app
 
 # Copy dependency files
 COPY deno.json .
+COPY import_map.json .
 COPY webcam-snapshot.ts .
 
 # Cache the dependencies
-RUN deno cache webcam-snapshot.ts
+RUN deno cache --import-map=import_map.json webcam-snapshot.ts
 
 # Create snapshots directory
 RUN mkdir snapshots

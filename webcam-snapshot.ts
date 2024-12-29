@@ -1,5 +1,4 @@
-import { serve } from "https://deno.land/std/http/server.ts";
-import { join } from "https://deno.land/std/path/mod.ts";
+import { join } from "std/path/mod.ts";
 
 // Configure environment variables
 const PORT = parseInt(Deno.env.get("PORT") || "3000");
@@ -107,7 +106,7 @@ async function cleanupOldSnapshots() {
 }
 
 // Start the HTTP server
-serve(async (req: Request) => {
+Deno.serve({ port: PORT }, async (req: Request) => {
     const url = new URL(req.url);
     
     // Add new redirect endpoint
@@ -192,7 +191,7 @@ serve(async (req: Request) => {
             headers: { 'Content-Type': 'text/plain' }
         }
     );
-}, { port: PORT });
+});
 
 // Run cleanup every hour
 setInterval(cleanupOldSnapshots, 60 * 60 * 1000);

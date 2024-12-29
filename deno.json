@@ -1,5 +1,12 @@
 {
+  "compilerOptions": {
+    "lib": ["deno.ns"]
+  },
+  "importMap": "src/import_map.json",
   "tasks": {
-    "start": "deno run --allow-net --allow-write --allow-read --allow-run --allow-env webcam-snapshot.ts"
+    "start": "deno run --allow-net --allow-write --allow-read --allow-run --allow-env --import-map=import_map.json webcam-snapshot.ts",
+    "docker-build": "docker build -t webcam-snapshot . ",
+    "docker-run": "docker run -p 3000:3000 -e PORT=3000 -e PUBLIC_URL=http://localhost:3000 webcam-snapshot",
+    "docker-all": "deno task docker-build && deno task docker-run"
   }
 } 
