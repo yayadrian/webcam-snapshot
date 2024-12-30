@@ -1,5 +1,20 @@
 import { join } from "std/path/mod.ts";
 
+interface Console {
+    log(...data: unknown[]): void;
+    error(...data: unknown[]): void;
+}
+
+// Add necessary web APIs to global scope
+declare global {
+    const fetch: typeof globalThis.fetch;
+    const URL: typeof globalThis.URL;
+    const Response: typeof globalThis.Response;
+    const Request: typeof globalThis.Request;
+    const console: Console;
+    const setInterval: typeof globalThis.setInterval;
+}
+
 // Configure environment variables
 const PORT = parseInt(Deno.env.get("PORT") || "3000");
 const PUBLIC_URL = Deno.env.get("PUBLIC_URL") || `http://localhost:${PORT}`;
@@ -21,29 +36,55 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
         const response = await fetch(videoSrc);
         const playlist = await response.text();
         
-        // Parse m3u8 to get the first video segment
+        // Parse m3u8 to get initialization segment and first video segment
         const lines = playlist.split('\n');
-        const videoSegment = lines.find(line => {
+        let initSegment: string | undefined;
+        let videoSegment: string | undefined;
+
+        for (const line of lines) {
             const trimmedLine = line.trim();
-            return trimmedLine && trimmedLine.endsWith('.ts') && !trimmedLine.startsWith('#');
-        });
+            if (trimmedLine.startsWith('#EXT-X-MAP:URI="')) {
+                initSegment = trimmedLine.split('URI="')[1].split('"')[0];
+            } else if (trimmedLine && !trimmedLine.startsWith('#')) {
+                videoSegment = trimmedLine;
+                break;
+            }
+        }
         
         if (!videoSegment) {
             throw new Error('No video segments found in playlist');
         }
 
-        const videoUrl = videoSegment.trim();
-        const videoResponse = await fetch(videoUrl);
-        const videoBuffer = await videoResponse.arrayBuffer();
+        // Get the base URL from the original URL
+        const baseUrl = new URL(videoSrc).href.split('/').slice(0, -1).join('/');
+        const videoUrl = videoSegment.startsWith('http') ? videoSegment : `${baseUrl}/${videoSegment}`;
         
         // Create timestamp for filenames
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const tempVideoFilename = join(SNAPSHOTS_DIR, `temp_segment-${timestamp}.ts`);
+        const tempVideoFilename = join(SNAPSHOTS_DIR, `temp_segment-${timestamp}.mp4`);
         const jpgFilename = `snapshot-${timestamp}.jpg`;
         const gifFilename = `snapshot-${timestamp}.gif`;
+
+        // Download and combine initialization segment with media segment
+        const videoResponse = await fetch(videoUrl);
+        const videoBuffer = await videoResponse.arrayBuffer();
         
-        // Save the video segment temporarily
-        await Deno.writeFile(tempVideoFilename, new Uint8Array(videoBuffer));
+        let finalBuffer: Uint8Array;
+        if (initSegment) {
+            const initUrl = initSegment.startsWith('http') ? initSegment : `${baseUrl}/${initSegment}`;
+            const initResponse = await fetch(initUrl);
+            const initBuffer = await initResponse.arrayBuffer();
+            
+            // Combine init segment with media segment
+            finalBuffer = new Uint8Array(initBuffer.byteLength + videoBuffer.byteLength);
+            finalBuffer.set(new Uint8Array(initBuffer), 0);
+            finalBuffer.set(new Uint8Array(videoBuffer), initBuffer.byteLength);
+        } else {
+            finalBuffer = new Uint8Array(videoBuffer);
+        }
+        
+        // Save the combined video temporarily
+        await Deno.writeFile(tempVideoFilename, finalBuffer);
         
         // Extract first frame as JPG using FFmpeg
         const ffmpegJpgSnapshot = new Deno.Command('ffmpeg', {
@@ -51,8 +92,10 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
                 '-i', tempVideoFilename,
                 '-vframes', '1',
                 '-f', 'image2',
+                '-y',
                 join(SNAPSHOTS_DIR, jpgFilename)
-            ]
+            ],
+            stderr: "piped"
         });
 
         // Create a 1-second GIF using FFmpeg
@@ -61,8 +104,10 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
                 '-i', tempVideoFilename,
                 '-t', '1',
                 '-vf', 'fps=10,scale=320:-1:flags=lanczos',
+                '-y',
                 join(SNAPSHOTS_DIR, gifFilename)
-            ]
+            ],
+            stderr: "piped"
         });
 
         const [jpgResult, gifResult] = await Promise.all([
@@ -71,6 +116,11 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
         ]);
         
         if (!jpgResult.success || !gifResult.success) {
+            // Log FFmpeg errors for debugging
+            const jpgError = new TextDecoder().decode(jpgResult.stderr);
+            const gifError = new TextDecoder().decode(gifResult.stderr);
+            console.error('FFmpeg JPG Error:', jpgError);
+            console.error('FFmpeg GIF Error:', gifError);
             throw new Error('Failed to create snapshots');
         }
 
@@ -78,8 +128,11 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
         await Deno.remove(tempVideoFilename);
         
         return { jpgFilename, gifFilename };
-    } catch (error) {
-        throw new Error(`Failed to process video: ${error.message}`);
+    } catch (error: unknown) {
+        if (error instanceof Error) {
+            throw new Error(`Failed to process video: ${error.message}`);
+        }
+        throw new Error('Failed to process video: Unknown error');
     }
 }
 
@@ -100,14 +153,14 @@ async function cleanupOldSnapshots() {
         for (const file of files.slice(100)) {
             await Deno.remove(join(SNAPSHOTS_DIR, file));
         }
-    } catch (error) {
+    } catch (error: unknown) {
         console.error('Error cleaning up snapshots:', error);
     }
 }
 
 // Start the HTTP server
-Deno.serve({ port: PORT }, async (req: Request) => {
-    const url = new URL(req.url);
+Deno.serve({ port: PORT }, async (request: Request) => {
+    const url = new URL(request.url);
     
     // Add new redirect endpoint
     if (url.pathname === '/redirect') {
@@ -130,8 +183,14 @@ Deno.serve({ port: PORT }, async (req: Request) => {
                 status: 302,
                 headers: { 'Location': redirectUrl }
             });
-        } catch (error) {
-            return new Response(JSON.stringify({ error: error.message }), {
+        } catch (error: unknown) {
+            if (error instanceof Error) {
+                return new Response(JSON.stringify({ error: error.message }), {
+                    status: 500,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            return new Response(JSON.stringify({ error: 'Unknown error' }), {
                 status: 500,
                 headers: { 'Content-Type': 'application/json' }
             });
@@ -156,8 +215,14 @@ Deno.serve({ port: PORT }, async (req: Request) => {
             }), {
                 headers: { 'Content-Type': 'application/json' }
             });
-        } catch (error) {
-            return new Response(JSON.stringify({ error: error.message }), {
+        } catch (error: unknown) {
+            if (error instanceof Error) {
+                return new Response(JSON.stringify({ error: error.message }), {
+                    status: 500,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            return new Response(JSON.stringify({ error: 'Unknown error' }), {
                 status: 500,
                 headers: { 'Content-Type': 'application/json' }
             });
