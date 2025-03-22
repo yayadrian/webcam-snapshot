@@ -2,7 +2,7 @@
   "compilerOptions": {
     "lib": ["deno.ns"]
   },
-  "importMap": "src/import_map.json",
+  "importMap": "import_map.json",
   "tasks": {
     "start": "deno run --allow-net --allow-write --allow-read --allow-run --allow-env --import-map=import_map.json webcam-snapshot.ts",
     "docker-build": "docker build -t webcam-snapshot . ",

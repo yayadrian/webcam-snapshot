@@ -1,18 +1,10 @@
+/// <reference lib="dom" />
+
 import { join } from "std/path/mod.ts";
 
 interface Console {
     log(...data: unknown[]): void;
     error(...data: unknown[]): void;
-}
-
-// Add necessary web APIs to global scope
-declare global {
-    const fetch: typeof globalThis.fetch;
-    const URL: typeof globalThis.URL;
-    const Response: typeof globalThis.Response;
-    const Request: typeof globalThis.Request;
-    const console: Console;
-    const setInterval: typeof globalThis.setInterval;
 }
 
 // Configure environment variables
