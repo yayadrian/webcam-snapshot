@@ -1,0 +1,19 @@
+FROM denoland/deno:1.41.3
+
+# Install FFmpeg
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# Create directory for snapshots
+RUN mkdir -p /app/youtube-snapshots
+
+# Copy the source code
+COPY youtube-snapshot.ts /app/
+
+# Set working directory
+WORKDIR /app
+
+# Expose the port
+EXPOSE 3001
+
+# Run the application
+CMD ["deno", "run", "--allow-net", "--allow-read", "--allow-write", "--allow-env", "youtube-snapshot.ts"] 

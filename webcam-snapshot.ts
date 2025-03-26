@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import { join } from "std/path/mod.ts";
+import { handleYouTubeSnapshot } from "./youtube-snapshot.ts";
 
 interface Console {
     log(...data: unknown[]): void;
@@ -26,9 +27,44 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
     console.log('Loading video stream...', videoSrc);
     try {
         const response = await fetch(videoSrc);
-        const playlist = await response.text();
+        if (!response.ok) {
+            throw new Error(`Failed to fetch stream: ${response.status} ${response.statusText}`);
+        }
+        let playlist = await response.text();
+        console.log('Received playlist:', playlist);
         
-        // Parse m3u8 to get initialization segment and first video segment
+        // Handle master playlist
+        if (playlist.includes('#EXT-X-STREAM-INF')) {
+            const lines = playlist.split('\n');
+            let streamUrl: string | undefined;
+            
+            for (const line of lines) {
+                const trimmedLine = line.trim();
+                if (trimmedLine && !trimmedLine.startsWith('#')) {
+                    streamUrl = trimmedLine;
+                    break;
+                }
+            }
+            
+            if (!streamUrl) {
+                throw new Error('No stream URL found in master playlist');
+            }
+            
+            // Get the base URL from the original URL
+            const baseUrl = new URL(videoSrc).href.split('/').slice(0, -1).join('/');
+            videoSrc = streamUrl.startsWith('http') ? streamUrl : `${baseUrl}/${streamUrl}`;
+            console.log('Following stream URL:', videoSrc);
+            
+            // Fetch the media playlist
+            const mediaResponse = await fetch(videoSrc);
+            if (!mediaResponse.ok) {
+                throw new Error(`Failed to fetch media playlist: ${mediaResponse.status} ${mediaResponse.statusText}`);
+            }
+            playlist = await mediaResponse.text();
+            console.log('Received media playlist:', playlist);
+        }
+        
+        // Parse media playlist
         const lines = playlist.split('\n');
         let initSegment: string | undefined;
         let videoSegment: string | undefined;
@@ -47,9 +83,10 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
             throw new Error('No video segments found in playlist');
         }
 
-        // Get the base URL from the original URL
+        // Get the base URL from the playlist URL
         const baseUrl = new URL(videoSrc).href.split('/').slice(0, -1).join('/');
         const videoUrl = videoSegment.startsWith('http') ? videoSegment : `${baseUrl}/${videoSegment}`;
+        console.log('Processing video segment:', videoUrl);
         
         // Create timestamp for filenames
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -154,6 +191,11 @@ async function cleanupOldSnapshots() {
 Deno.serve({ port: PORT }, async (request: Request) => {
     const url = new URL(request.url);
     
+    // Handle YouTube snapshot requests
+    if (url.pathname.startsWith('/youtube-snapshot')) {
+        return handleYouTubeSnapshot(request);
+    }
+    
     // Add new redirect endpoint
     if (url.pathname === '/redirect') {
         const videoSrc = url.searchParams.get('url');
@@ -239,11 +281,12 @@ Deno.serve({ port: PORT }, async (request: Request) => {
     return new Response(
         'Webcam Snapshot Service\n\n' +
         'Available endpoints:\n\n' +
-        '1. JSON Response:\n' +
-        '   /snapshot?url=YOUR_WEBCAM_URL\n\n' +
-        '2. Direct Image Redirect:\n' +
-        '   /redirect?url=YOUR_WEBCAM_URL&format=jpg\n' +
-        '   /redirect?url=YOUR_WEBCAM_URL&format=gif\n', 
+        '1. Webcam Snapshots:\n' +
+        '   /snapshot?url=YOUR_WEBCAM_URL\n' +
+        '   /redirect?url=YOUR_WEBCAM_URL&format=jpg\n\n' +
+        '2. YouTube Snapshots:\n' +
+        '   /youtube-snapshot?url=YOUR_YOUTUBE_URL\n' +
+        '   /youtube-snapshot/redirect?url=YOUR_YOUTUBE_URL&format=jpg\n', 
         {
             headers: { 'Content-Type': 'text/plain' }
         }
