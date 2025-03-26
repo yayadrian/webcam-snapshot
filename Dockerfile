@@ -9,6 +9,7 @@ WORKDIR /app
 # Copy dependency files
 COPY deno.json .
 COPY webcam-snapshot.ts .
+COPY youtube-snapshot.ts .
 COPY import_map.json .
 
 # Cache the dependencies
