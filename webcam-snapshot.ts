@@ -12,6 +12,10 @@ interface Console {
 const PORT = parseInt(Deno.env.get("PORT") || "3000");
 const PUBLIC_URL = Deno.env.get("PUBLIC_URL") || `http://localhost:${PORT}`;
 const SNAPSHOTS_DIR = "snapshots";
+// Get current working directory
+const CURRENT_DIR = Deno.cwd();
+// Create absolute path for snapshots
+const SNAPSHOTS_PATH = join(CURRENT_DIR, SNAPSHOTS_DIR);
 
 // Ensure snapshots directory exists
 try {
@@ -25,136 +29,60 @@ try {
 // Function to take snapshot from video stream
 async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gifFilename: string}> {
     console.log('Loading video stream...', videoSrc);
+    
+    // Create timestamp for filenames
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const jpgFilename = `snapshot-${timestamp}.jpg`;
+    const gifFilename = `snapshot-${timestamp}.gif`;
+    
+    // Create absolute paths for output files
+    const jpgPath = join(SNAPSHOTS_PATH, jpgFilename);
+    const gifPath = join(SNAPSHOTS_PATH, gifFilename);
+    
     try {
-        const response = await fetch(videoSrc);
-        if (!response.ok) {
-            throw new Error(`Failed to fetch stream: ${response.status} ${response.statusText}`);
-        }
-        let playlist = await response.text();
-        console.log('Received playlist:', playlist);
-        
-        // Handle master playlist
-        if (playlist.includes('#EXT-X-STREAM-INF')) {
-            const lines = playlist.split('\n');
-            let streamUrl: string | undefined;
-            
-            for (const line of lines) {
-                const trimmedLine = line.trim();
-                if (trimmedLine && !trimmedLine.startsWith('#')) {
-                    streamUrl = trimmedLine;
-                    break;
-                }
-            }
-            
-            if (!streamUrl) {
-                throw new Error('No stream URL found in master playlist');
-            }
-            
-            // Get the base URL from the original URL
-            const baseUrl = new URL(videoSrc).href.split('/').slice(0, -1).join('/');
-            videoSrc = streamUrl.startsWith('http') ? streamUrl : `${baseUrl}/${streamUrl}`;
-            console.log('Following stream URL:', videoSrc);
-            
-            // Fetch the media playlist
-            const mediaResponse = await fetch(videoSrc);
-            if (!mediaResponse.ok) {
-                throw new Error(`Failed to fetch media playlist: ${mediaResponse.status} ${mediaResponse.statusText}`);
-            }
-            playlist = await mediaResponse.text();
-            console.log('Received media playlist:', playlist);
-        }
-        
-        // Parse media playlist
-        const lines = playlist.split('\n');
-        let initSegment: string | undefined;
-        let videoSegment: string | undefined;
-
-        for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (trimmedLine.startsWith('#EXT-X-MAP:URI="')) {
-                initSegment = trimmedLine.split('URI="')[1].split('"')[0];
-            } else if (trimmedLine && !trimmedLine.startsWith('#')) {
-                videoSegment = trimmedLine;
-                break;
-            }
-        }
-        
-        if (!videoSegment) {
-            throw new Error('No video segments found in playlist');
-        }
-
-        // Get the base URL from the playlist URL
-        const baseUrl = new URL(videoSrc).href.split('/').slice(0, -1).join('/');
-        const videoUrl = videoSegment.startsWith('http') ? videoSegment : `${baseUrl}/${videoSegment}`;
-        console.log('Processing video segment:', videoUrl);
-        
-        // Create timestamp for filenames
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const tempVideoFilename = join(SNAPSHOTS_DIR, `temp_segment-${timestamp}.mp4`);
-        const jpgFilename = `snapshot-${timestamp}.jpg`;
-        const gifFilename = `snapshot-${timestamp}.gif`;
-
-        // Download and combine initialization segment with media segment
-        const videoResponse = await fetch(videoUrl);
-        const videoBuffer = await videoResponse.arrayBuffer();
-        
-        let finalBuffer: Uint8Array;
-        if (initSegment) {
-            const initUrl = initSegment.startsWith('http') ? initSegment : `${baseUrl}/${initSegment}`;
-            const initResponse = await fetch(initUrl);
-            const initBuffer = await initResponse.arrayBuffer();
-            
-            // Combine init segment with media segment
-            finalBuffer = new Uint8Array(initBuffer.byteLength + videoBuffer.byteLength);
-            finalBuffer.set(new Uint8Array(initBuffer), 0);
-            finalBuffer.set(new Uint8Array(videoBuffer), initBuffer.byteLength);
-        } else {
-            finalBuffer = new Uint8Array(videoBuffer);
-        }
-        
-        // Save the combined video temporarily
-        await Deno.writeFile(tempVideoFilename, finalBuffer);
-        
-        // Extract first frame as JPG using FFmpeg
-        const ffmpegJpgSnapshot = new Deno.Command('ffmpeg', {
+        // Try direct HLS stream capture for JPG
+        console.log('Capturing JPG directly from stream');
+        const jpgFfmpeg = new Deno.Command('ffmpeg', {
             args: [
-                '-i', tempVideoFilename,
-                '-vframes', '1',
+                '-loglevel', 'warning',
+                '-timeout', '30000000',  // 30 second timeout for connection
+                '-i', videoSrc,          // Use HLS URL directly
+                '-vframes', '1',         // Get just one frame
                 '-f', 'image2',
                 '-y',
-                join(SNAPSHOTS_DIR, jpgFilename)
+                jpgPath
             ],
             stderr: "piped"
         });
-
-        // Create a 1-second GIF using FFmpeg
-        const ffmpegGifSnapshot = new Deno.Command('ffmpeg', {
+        
+        const jpgResult = await jpgFfmpeg.output();
+        if (!jpgResult.success) {
+            const jpgError = new TextDecoder().decode(jpgResult.stderr);
+            console.error('FFmpeg JPG Error:', jpgError);
+            throw new Error('Failed to capture JPG snapshot');
+        }
+        
+        // Try direct HLS stream capture for GIF
+        console.log('Capturing GIF directly from stream');
+        const gifFfmpeg = new Deno.Command('ffmpeg', {
             args: [
-                '-i', tempVideoFilename,
-                '-t', '1',
+                '-loglevel', 'warning',
+                '-timeout', '30000000',   // 30 second timeout
+                '-i', videoSrc,           // Use HLS URL directly
+                '-t', '1',                // Get 1 second of video
                 '-vf', 'fps=10,scale=320:-1:flags=lanczos',
                 '-y',
-                join(SNAPSHOTS_DIR, gifFilename)
+                gifPath
             ],
             stderr: "piped"
         });
-
-        const [jpgResult, gifResult] = await Promise.all([
-            ffmpegJpgSnapshot.output(),
-            ffmpegGifSnapshot.output()
-        ]);
         
-        if (!jpgResult.success || !gifResult.success) {
-            // Log FFmpeg errors for debugging
-            const jpgError = new TextDecoder().decode(jpgResult.stderr);
+        const gifResult = await gifFfmpeg.output();
+        if (!gifResult.success) {
             const gifError = new TextDecoder().decode(gifResult.stderr);
-            console.error('FFmpeg JPG Error:', jpgError);
             console.error('FFmpeg GIF Error:', gifError);
-            throw new Error('Failed to create snapshots');
+            throw new Error('Failed to capture GIF snapshot');
         }
-
-        // Clean up temporary file
-        await Deno.remove(tempVideoFilename);
         
         return { jpgFilename, gifFilename };
     } catch (error: unknown) {
@@ -165,11 +93,54 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
     }
 }
 
+// Function to extract frames directly from the input file
+async function extractFramesDirectly(videoPath: string, jpgPath: string, gifPath: string): Promise<void> {
+    // Extract JPG directly
+    const jpgExtract = new Deno.Command('ffmpeg', {
+        args: [
+            '-f', 'mpegts',
+            '-i', videoPath,
+            '-vframes', '1',
+            '-f', 'image2',
+            '-y',
+            jpgPath
+        ],
+        stderr: "piped"
+    });
+    
+    const jpgResult = await jpgExtract.output();
+    if (!jpgResult.success) {
+        const jpgError = new TextDecoder().decode(jpgResult.stderr);
+        console.error('Direct JPG extraction error:', jpgError);
+        throw new Error('Failed to extract JPG');
+    }
+    
+    // Extract GIF directly
+    const gifExtract = new Deno.Command('ffmpeg', {
+        args: [
+            '-f', 'mpegts',
+            '-i', videoPath,
+            '-t', '1',
+            '-vf', 'fps=10,scale=320:-1:flags=lanczos',
+            '-y',
+            gifPath
+        ],
+        stderr: "piped"
+    });
+    
+    const gifResult = await gifExtract.output();
+    if (!gifResult.success) {
+        const gifError = new TextDecoder().decode(gifResult.stderr);
+        console.error('Direct GIF extraction error:', gifError);
+        throw new Error('Failed to extract GIF');
+    }
+}
+
 // Clean up old snapshots (keep last 100)
 async function cleanupOldSnapshots() {
     try {
         const files = [];
-        for await (const entry of Deno.readDir(SNAPSHOTS_DIR)) {
+        for await (const entry of Deno.readDir(SNAPSHOTS_PATH)) {
             if (entry.isFile && entry.name.startsWith('snapshot-')) {
                 files.push(entry.name);
             }
@@ -180,7 +151,7 @@ async function cleanupOldSnapshots() {
         
         // Remove all but the latest 100 files
         for (const file of files.slice(100)) {
-            await Deno.remove(join(SNAPSHOTS_DIR, file));
+            await Deno.remove(join(SNAPSHOTS_PATH, file));
         }
     } catch (error: unknown) {
         console.error('Error cleaning up snapshots:', error);
@@ -267,7 +238,7 @@ Deno.serve({ port: PORT }, async (request: Request) => {
     if (url.pathname.startsWith('/images/')) {
         const filename = url.pathname.replace('/images/', '');
         try {
-            const file = await Deno.readFile(join(SNAPSHOTS_DIR, filename));
+            const file = await Deno.readFile(join(SNAPSHOTS_PATH, filename));
             const contentType = filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
             return new Response(file, {
                 headers: { 'Content-Type': contentType }
@@ -284,6 +255,7 @@ Deno.serve({ port: PORT }, async (request: Request) => {
         '1. Webcam Snapshots:\n' +
         '   /snapshot?url=YOUR_WEBCAM_URL\n' +
         '   /redirect?url=YOUR_WEBCAM_URL&format=jpg\n\n' +
+        '   /snapshot?url=https://camsecure.co/HLS/swanagecamlifeboat.m3u8\n\n' +
         '2. YouTube Snapshots:\n' +
         '   /youtube-snapshot?url=YOUR_YOUTUBE_URL\n' +
         '   /youtube-snapshot/redirect?url=YOUR_YOUTUBE_URL&format=jpg\n', 

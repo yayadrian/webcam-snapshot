@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y ffmpeg && apt-get clean
 # Create app directory
 WORKDIR /app
 
+# Set environment variable to indicate we're in Docker
+ENV IS_DOCKER=true
+
 # Copy dependency files
 COPY deno.json .
 COPY webcam-snapshot.ts .
