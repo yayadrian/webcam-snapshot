@@ -35,32 +35,6 @@ function extractYouTubeVideoId(url: string): string | null {
     return null;
 }
 
-// Function to get HLS stream URL from YouTube video ID
-async function getYouTubeStreamUrl(videoId: string): Promise<string> {
-    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-    const html = await response.text();
-    
-    // Extract player config
-    const playerConfigMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?})\s*;/);
-    if (!playerConfigMatch) {
-        throw new Error('Could not find player configuration');
-    }
-
-    const playerConfig = JSON.parse(playerConfigMatch[1]);
-    
-    // Find the highest quality HLS stream
-    const formats = playerConfig.streamingData?.formats || [];
-    const hlsFormats = formats.filter((f: any) => f.mimeType?.includes('application/x-mpegURL'));
-    
-    if (hlsFormats.length === 0) {
-        throw new Error('No HLS streams found');
-    }
-
-    // Sort by quality and get the highest quality stream
-    hlsFormats.sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
-    return hlsFormats[0].url;
-}
-
 // Function to take snapshot from YouTube stream
 async function takeYouTubeSnapshot(videoUrl: string): Promise<{jpgFilename: string, gifFilename: string}> {
     console.log('Processing YouTube video:', videoUrl);
@@ -69,86 +43,172 @@ async function takeYouTubeSnapshot(videoUrl: string): Promise<{jpgFilename: stri
     if (!videoId) {
         throw new Error('Invalid YouTube URL');
     }
-
-    const streamUrl = await getYouTubeStreamUrl(videoId);
     
     // Create timestamp for filenames
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const tempVideoFilename = join(SNAPSHOTS_DIR, `temp_segment-${timestamp}.mp4`);
-    const jpgFilename = `youtube-${videoId}-${timestamp}.jpg`;
-    const gifFilename = `youtube-${videoId}-${timestamp}.gif`;
-
-    // Download the stream segment
-    const response = await fetch(streamUrl);
-    const playlist = await response.text();
     
-    // Parse m3u8 to get first video segment
-    const lines = playlist.split('\n');
-    let videoSegment: string | undefined;
+    // Try the thumbnail method first as it's more reliable
+    try {
+        console.log('Using direct thumbnail method first');
+        return await getYouTubeThumbnail(videoId, timestamp);
+    } catch (thumbnailError) {
+        console.error('Thumbnail method failed, falling back to video download:', thumbnailError);
+        
+        // Fall back to video download method if thumbnail fails
+        const tempVideoFilename = join(SNAPSHOTS_DIR, `temp_segment-${timestamp}.mp4`);
+        const jpgFilename = `youtube-${videoId}-${timestamp}.jpg`;
+        const gifFilename = `youtube-${videoId}-${timestamp}.gif`;
 
-    for (const line of lines) {
-        const trimmedLine = line.trim();
-        if (trimmedLine && !trimmedLine.startsWith('#')) {
-            videoSegment = trimmedLine;
-            break;
+        try {
+            // Use yt-dlp to download a short segment of the video
+            console.log('Downloading video segment using yt-dlp');
+            const ytdlp = new Deno.Command('yt-dlp', {
+                args: [
+                    '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', // Best MP4 format
+                    '--output', tempVideoFilename,
+                    '--live-from-start', // For live streams, start from beginning of available segment
+                    '--downloader', 'ffmpeg', // Use ffmpeg as the downloader for live streams
+                    '--downloader-args', 'ffmpeg:-ss 0 -t 3', // Only get 3 seconds from start of available segment
+                    '--force-overwrites',
+                    '--ignore-no-formats-error',
+                    '--ignore-errors',
+                    '--retries', '3',                     // Reduce retry attempts from default 10 to 3
+                    '--fragment-retries', '3',            // Reduce fragment retry attempts to 3
+                    videoUrl
+                ],
+                stderr: "piped",
+                stdout: "piped"
+            });
+            
+            const ytdlpResult = await ytdlp.output();
+            const ytdlpOutput = new TextDecoder().decode(ytdlpResult.stdout);
+            const ytdlpError = new TextDecoder().decode(ytdlpResult.stderr);
+            
+            // Check if file exists and has content
+            let fileExists = false;
+            try {
+                const fileInfo = await Deno.stat(tempVideoFilename);
+                fileExists = fileInfo.size > 0;
+            } catch (e) {
+                fileExists = false;
+            }
+            
+            if (!ytdlpResult.success || !fileExists) {
+                console.error('yt-dlp Error:', ytdlpError);
+                console.log('yt-dlp Output:', ytdlpOutput);
+                throw new Error('Failed to download video segment');
+            }
+            
+            // Extract last frame as JPG using FFmpeg
+            const ffmpegJpgSnapshot = new Deno.Command('ffmpeg', {
+                args: [
+                    '-i', tempVideoFilename,
+                    '-sseof', '-0.1',         // Seek to 0.1 seconds before the end
+                    '-vframes', '1',
+                    '-f', 'image2',
+                    '-y',
+                    join(SNAPSHOTS_DIR, jpgFilename)
+                ],
+                stderr: "piped"
+            });
+
+            // Create a 1-second GIF starting from near the end
+            const ffmpegGifSnapshot = new Deno.Command('ffmpeg', {
+                args: [
+                    '-i', tempVideoFilename,
+                    '-sseof', '-1.0',         // Start 1 second before the end
+                    '-t', '1',                // Get 1 second of video (or whatever is available)
+                    '-vf', 'fps=10,scale=320:-1:flags=lanczos',
+                    '-y',
+                    join(SNAPSHOTS_DIR, gifFilename)
+                ],
+                stderr: "piped"
+            });
+
+            const [jpgResult, gifResult] = await Promise.all([
+                ffmpegJpgSnapshot.output(),
+                ffmpegGifSnapshot.output()
+            ]);
+            
+            if (!jpgResult.success || !gifResult.success) {
+                // Log FFmpeg errors for debugging
+                const jpgError = new TextDecoder().decode(jpgResult.stderr);
+                const gifError = new TextDecoder().decode(gifResult.stderr);
+                console.error('FFmpeg JPG Error:', jpgError);
+                console.error('FFmpeg GIF Error:', gifError);
+                throw new Error('Failed to create snapshots');
+            }
+            
+            return { jpgFilename, gifFilename };
+        } catch (videoError) {
+            console.error('Video download method also failed:', videoError);
+            throw new Error('All snapshot methods failed');
+        } finally {
+            // Clean up temporary file
+            try {
+                await Deno.remove(tempVideoFilename).catch(() => {
+                    // Ignore errors from file not existing
+                });
+            } catch (error) {
+                console.error('Failed to remove temporary file:', error);
+            }
         }
     }
+}
+
+// Function to get YouTube thumbnail as fallback
+async function getYouTubeThumbnail(videoId: string, timestamp: string): Promise<{jpgFilename: string, gifFilename: string}> {
+    // Use live thumbnail URL which updates more frequently
+    const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/live.jpg`;
+    const fallbackThumbnailUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+    const finalFallbackUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
     
-    if (!videoSegment) {
-        throw new Error('No video segments found in playlist');
+    const jpgFilename = `youtube-${videoId}-${timestamp}.jpg`;
+    const gifFilename = `youtube-${videoId}-${timestamp}.gif`;
+    
+    // Try to download the thumbnail
+    let response;
+    try {
+        // Try live thumbnail first
+        response = await fetch(thumbnailUrl);
+        if (!response.ok) {
+            console.log('Live thumbnail not available, trying maxresdefault');
+            response = await fetch(fallbackThumbnailUrl);
+            
+            if (!response.ok) {
+                console.log('Maxres thumbnail not available, trying hqdefault');
+                response = await fetch(finalFallbackUrl);
+                
+                if (!response.ok) {
+                    throw new Error('Failed to download any thumbnail');
+                }
+            }
+        }
+    } catch (error) {
+        throw new Error(`Failed to fetch YouTube thumbnail: ${error instanceof Error ? error.message : String(error)}`);
     }
-
-    // Get the base URL from the stream URL
-    const baseUrl = new URL(streamUrl).href.split('/').slice(0, -1).join('/');
-    const segmentUrl = videoSegment.startsWith('http') ? videoSegment : `${baseUrl}/${videoSegment}`;
     
-    // Download the video segment
-    const videoResponse = await fetch(segmentUrl);
-    const videoBuffer = await videoResponse.arrayBuffer();
+    // Write the downloaded thumbnail as JPG
+    const imageData = new Uint8Array(await response.arrayBuffer());
+    await Deno.writeFile(join(SNAPSHOTS_DIR, jpgFilename), imageData);
     
-    // Save the video segment temporarily
-    await Deno.writeFile(tempVideoFilename, new Uint8Array(videoBuffer));
-    
-    // Extract first frame as JPG using FFmpeg
-    const ffmpegJpgSnapshot = new Deno.Command('ffmpeg', {
+    // Create a simple static GIF from the JPG
+    const ffmpegStaticGif = new Deno.Command('ffmpeg', {
         args: [
-            '-i', tempVideoFilename,
-            '-vframes', '1',
-            '-f', 'image2',
-            '-y',
-            join(SNAPSHOTS_DIR, jpgFilename)
-        ],
-        stderr: "piped"
-    });
-
-    // Create a 1-second GIF using FFmpeg
-    const ffmpegGifSnapshot = new Deno.Command('ffmpeg', {
-        args: [
-            '-i', tempVideoFilename,
-            '-t', '1',
-            '-vf', 'fps=10,scale=320:-1:flags=lanczos',
+            '-i', join(SNAPSHOTS_DIR, jpgFilename),
+            '-vf', 'scale=320:-1:flags=lanczos',
             '-y',
             join(SNAPSHOTS_DIR, gifFilename)
         ],
         stderr: "piped"
     });
-
-    const [jpgResult, gifResult] = await Promise.all([
-        ffmpegJpgSnapshot.output(),
-        ffmpegGifSnapshot.output()
-    ]);
     
-    if (!jpgResult.success || !gifResult.success) {
-        // Log FFmpeg errors for debugging
-        const jpgError = new TextDecoder().decode(jpgResult.stderr);
+    const gifResult = await ffmpegStaticGif.output();
+    if (!gifResult.success) {
         const gifError = new TextDecoder().decode(gifResult.stderr);
-        console.error('FFmpeg JPG Error:', jpgError);
         console.error('FFmpeg GIF Error:', gifError);
-        throw new Error('Failed to create snapshots');
+        throw new Error('Failed to create static GIF from thumbnail');
     }
-
-    // Clean up temporary file
-    await Deno.remove(tempVideoFilename);
     
     return { jpgFilename, gifFilename };
 }

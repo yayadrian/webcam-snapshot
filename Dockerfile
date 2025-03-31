@@ -1,7 +1,11 @@
 FROM denoland/deno:latest
 
-# Install ffmpeg
-RUN apt-get update && apt-get install -y ffmpeg && apt-get clean
+# Install ffmpeg and yt-dlp
+RUN apt-get update && \
+    apt-get install -y ffmpeg curl && \
+    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
+    chmod a+rx /usr/local/bin/yt-dlp && \
+    apt-get clean
 
 # Create app directory
 WORKDIR /app
@@ -20,6 +24,7 @@ RUN deno cache --import-map=import_map.json webcam-snapshot.ts
 
 # Create snapshots directory
 RUN mkdir snapshots
+RUN mkdir youtube-snapshots
 
 # Start the application
 CMD ["deno", "task", "start"] 
