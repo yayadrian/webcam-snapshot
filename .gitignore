@@ -128,3 +128,11 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Webcam Snapshot Service specific
+snapshots/
+youtube-snapshots/
+*.jpg
+*.gif
+*.mp4
+temp_segment-*
