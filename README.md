@@ -98,6 +98,19 @@ Notes:
 - When running behind a proxy or non-localhost, set `PUBLIC_URL` so returned URLs are externally valid.
 - `Dockerfile.youtube` is experimental/legacy; use the main `Dockerfile` for the server.
 
+## Code Quality
+
+This codebase follows modern TypeScript best practices:
+
+- **Comprehensive JSDoc documentation** for all functions
+- **Type-safe interfaces** for all data structures  
+- **Modular architecture** with separated concerns
+- **Constants extracted** for all configuration values
+- **Consistent error handling** with standardized responses
+- **Input validation** with type guards
+- **Proper cleanup** of temporary files and old snapshots
+- **Efficient execution** with parallel processing where appropriate
+
 ## License
 
 MIT

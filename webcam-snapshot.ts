@@ -3,35 +3,125 @@
 import { join } from "std/path/mod.ts";
 import { handleYouTubeSnapshot } from "./youtube-snapshot.ts";
 
-interface Console {
-    log(...data: unknown[]): void;
-    error(...data: unknown[]): void;
-}
+// Constants
+const DEFAULT_PORT = 3000;
+const FFMPEG_TIMEOUT = "30000000"; // 30 seconds in microseconds
+const FFMPEG_SEGMENT_DURATION = "1"; // 1 second for GIF
+const GIF_FPS = 10;
+const GIF_SCALE = "320:-1";
+const MAX_SNAPSHOTS_TO_KEEP = 100;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 // Configure environment variables
-const PORT = parseInt(Deno.env.get("PORT") || "3000");
+const PORT = parseInt(Deno.env.get("PORT") || String(DEFAULT_PORT));
 const PUBLIC_URL = Deno.env.get("PUBLIC_URL") || `http://localhost:${PORT}`;
 const SNAPSHOTS_DIR = "snapshots";
-// Get current working directory
+
+// Get current working directory and create absolute path for snapshots
 const CURRENT_DIR = Deno.cwd();
-// Create absolute path for snapshots
 const SNAPSHOTS_PATH = join(CURRENT_DIR, SNAPSHOTS_DIR);
 
-// Ensure snapshots directory exists
-try {
-    await Deno.mkdir(SNAPSHOTS_DIR, { recursive: true });
-} catch (error) {
-    if (!(error instanceof Deno.errors.AlreadyExists)) {
-        throw error;
+// Type definitions
+interface SnapshotResult {
+    jpgFilename: string;
+    gifFilename: string;
+}
+
+interface SnapshotUrls {
+    jpgUrl: string;
+    gifUrl: string;
+}
+
+/**
+ * Utility function to create a standardized timestamp for filenames
+ * @returns ISO timestamp with colons and dots replaced with hyphens
+ */
+function createTimestamp(): string {
+    return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+/**
+ * Utility function to handle JSON error responses
+ * @param error - The error to format
+ * @param status - HTTP status code (default: 500)
+ * @returns Response with JSON error message
+ */
+function createErrorResponse(error: unknown, status = 500): Response {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return new Response(JSON.stringify({ error: message }), {
+        status,
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
+/**
+ * Creates an FFmpeg command for capturing a JPG frame from a video stream
+ * @param videoSrc - The video source URL
+ * @param outputPath - The output file path for the JPG
+ * @returns Configured Deno.Command for FFmpeg
+ */
+function createJpgCaptureCommand(videoSrc: string, outputPath: string): Deno.Command {
+    return new Deno.Command('ffmpeg', {
+        args: [
+            '-loglevel', 'warning',
+            '-timeout', FFMPEG_TIMEOUT,
+            '-i', videoSrc,
+            '-vframes', '1',
+            '-f', 'image2',
+            '-y',
+            outputPath
+        ],
+        stderr: "piped"
+    });
+}
+
+/**
+ * Creates an FFmpeg command for capturing a GIF from a video stream
+ * @param videoSrc - The video source URL
+ * @param outputPath - The output file path for the GIF
+ * @returns Configured Deno.Command for FFmpeg
+ */
+function createGifCaptureCommand(videoSrc: string, outputPath: string): Deno.Command {
+    return new Deno.Command('ffmpeg', {
+        args: [
+            '-loglevel', 'warning',
+            '-timeout', FFMPEG_TIMEOUT,
+            '-i', videoSrc,
+            '-t', FFMPEG_SEGMENT_DURATION,
+            '-vf', `fps=${GIF_FPS},scale=${GIF_SCALE}:flags=lanczos`,
+            '-y',
+            outputPath
+        ],
+        stderr: "piped"
+    });
+}
+
+/**
+ * Execute an FFmpeg command and handle errors
+ * @param command - The FFmpeg command to execute
+ * @param operationType - Description of the operation for error reporting
+ * @returns Promise that resolves if successful, throws if failed
+ */
+async function executeFFmpegCommand(command: Deno.Command, operationType: string): Promise<void> {
+    const result = await command.output();
+    if (!result.success) {
+        const error = new TextDecoder().decode(result.stderr);
+        console.error(`FFmpeg ${operationType} Error:`, error);
+        throw new Error(`Failed to ${operationType.toLowerCase()}`);
     }
 }
 
-// Function to take snapshot from video stream
-async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gifFilename: string}> {
+/**
+ * Takes a snapshot (JPG + 1s GIF) from a video stream
+ * @param videoSrc - The video source URL (HLS, webcam, etc.)
+ * @returns Promise<SnapshotResult> with filenames of generated images
+ * @throws Error if snapshot generation fails
+ */
+async function takeSnapshot(videoSrc: string): Promise<SnapshotResult> {
     console.log('Loading video stream...', videoSrc);
     
     // Create timestamp for filenames
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const timestamp = createTimestamp();
     const jpgFilename = `snapshot-${timestamp}.jpg`;
     const gifFilename = `snapshot-${timestamp}.gif`;
     
@@ -40,49 +130,15 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
     const gifPath = join(SNAPSHOTS_PATH, gifFilename);
     
     try {
-        // Try direct HLS stream capture for JPG
-        console.log('Capturing JPG directly from stream');
-        const jpgFfmpeg = new Deno.Command('ffmpeg', {
-            args: [
-                '-loglevel', 'warning',
-                '-timeout', '30000000',  // 30 second timeout for connection
-                '-i', videoSrc,          // Use HLS URL directly
-                '-vframes', '1',         // Get just one frame
-                '-f', 'image2',
-                '-y',
-                jpgPath
-            ],
-            stderr: "piped"
-        });
+        // Capture JPG and GIF in parallel for efficiency
+        console.log('Capturing JPG and GIF from stream');
+        const jpgCommand = createJpgCaptureCommand(videoSrc, jpgPath);
+        const gifCommand = createGifCaptureCommand(videoSrc, gifPath);
         
-        const jpgResult = await jpgFfmpeg.output();
-        if (!jpgResult.success) {
-            const jpgError = new TextDecoder().decode(jpgResult.stderr);
-            console.error('FFmpeg JPG Error:', jpgError);
-            throw new Error('Failed to capture JPG snapshot');
-        }
-        
-        // Try direct HLS stream capture for GIF
-        console.log('Capturing GIF directly from stream');
-        const gifFfmpeg = new Deno.Command('ffmpeg', {
-            args: [
-                '-loglevel', 'warning',
-                '-timeout', '30000000',   // 30 second timeout
-                '-i', videoSrc,           // Use HLS URL directly
-                '-t', '1',                // Get 1 second of video
-                '-vf', 'fps=10,scale=320:-1:flags=lanczos',
-                '-y',
-                gifPath
-            ],
-            stderr: "piped"
-        });
-        
-        const gifResult = await gifFfmpeg.output();
-        if (!gifResult.success) {
-            const gifError = new TextDecoder().decode(gifResult.stderr);
-            console.error('FFmpeg GIF Error:', gifError);
-            throw new Error('Failed to capture GIF snapshot');
-        }
+        await Promise.all([
+            executeFFmpegCommand(jpgCommand, 'JPG capture'),
+            executeFFmpegCommand(gifCommand, 'GIF capture')
+        ]);
         
         return { jpgFilename, gifFilename };
     } catch (error: unknown) {
@@ -93,162 +149,135 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
     }
 }
 
-// Function to extract frames directly from the input file
-async function extractFramesDirectly(videoPath: string, jpgPath: string, gifPath: string): Promise<void> {
-    // Extract JPG directly
-    const jpgExtract = new Deno.Command('ffmpeg', {
-        args: [
-            '-f', 'mpegts',
-            '-i', videoPath,
-            '-vframes', '1',
-            '-f', 'image2',
-            '-y',
-            jpgPath
-        ],
-        stderr: "piped"
-    });
-    
-    const jpgResult = await jpgExtract.output();
-    if (!jpgResult.success) {
-        const jpgError = new TextDecoder().decode(jpgResult.stderr);
-        console.error('Direct JPG extraction error:', jpgError);
-        throw new Error('Failed to extract JPG');
-    }
-    
-    // Extract GIF directly
-    const gifExtract = new Deno.Command('ffmpeg', {
-        args: [
-            '-f', 'mpegts',
-            '-i', videoPath,
-            '-t', '1',
-            '-vf', 'fps=10,scale=320:-1:flags=lanczos',
-            '-y',
-            gifPath
-        ],
-        stderr: "piped"
-    });
-    
-    const gifResult = await gifExtract.output();
-    if (!gifResult.success) {
-        const gifError = new TextDecoder().decode(gifResult.stderr);
-        console.error('Direct GIF extraction error:', gifError);
-        throw new Error('Failed to extract GIF');
-    }
-}
 
-// Clean up old snapshots (keep last 100)
-async function cleanupOldSnapshots() {
+
+/**
+ * Clean up old snapshots, keeping only the latest files
+ * @param maxFiles - Maximum number of files to keep (default: MAX_SNAPSHOTS_TO_KEEP)
+ * @returns Promise that resolves when cleanup is complete
+ */
+async function cleanupOldSnapshots(maxFiles = MAX_SNAPSHOTS_TO_KEEP): Promise<void> {
     try {
-        const files = [];
+        const files: string[] = [];
+        
+        // Collect all snapshot files
         for await (const entry of Deno.readDir(SNAPSHOTS_PATH)) {
             if (entry.isFile && entry.name.startsWith('snapshot-')) {
                 files.push(entry.name);
             }
         }
         
-        // Sort files by creation time (newest first)
-        files.sort().reverse();
+        // Sort files by creation time (newest first) and remove old ones
+        const sortedFiles = files.sort().reverse();
+        const filesToDelete = sortedFiles.slice(maxFiles);
         
-        // Remove all but the latest 100 files
-        for (const file of files.slice(100)) {
-            await Deno.remove(join(SNAPSHOTS_PATH, file));
+        // Delete old files
+        for (const file of filesToDelete) {
+            try {
+                await Deno.remove(join(SNAPSHOTS_PATH, file));
+                console.log(`Cleaned up old snapshot: ${file}`);
+            } catch (deleteError) {
+                console.error(`Failed to delete ${file}:`, deleteError);
+            }
+        }
+        
+        if (filesToDelete.length > 0) {
+            console.log(`Cleanup complete: removed ${filesToDelete.length} old snapshots`);
         }
     } catch (error: unknown) {
-        console.error('Error cleaning up snapshots:', error);
+        console.error('Error during snapshot cleanup:', error);
     }
 }
 
-// Start the HTTP server
-Deno.serve({ port: PORT }, async (request: Request) => {
-    const url = new URL(request.url);
+/**
+ * Validates format parameter for redirect endpoints
+ * @param format - The format string to validate
+ * @returns true if format is valid (jpg or gif)
+ */
+function isValidFormat(format: string): format is 'jpg' | 'gif' {
+    return format === 'jpg' || format === 'gif';
+}
+
+/**
+ * Handles the redirect endpoint for webcam snapshots
+ * @param url - The URL object containing search parameters
+ * @returns Response with redirect or error
+ */
+async function handleRedirectEndpoint(url: URL): Promise<Response> {
+    const videoSrc = url.searchParams.get('url');
+    const format = url.searchParams.get('format')?.toLowerCase() || 'jpg';
     
-    // Handle YouTube snapshot requests
-    if (url.pathname.startsWith('/youtube-snapshot')) {
-        return handleYouTubeSnapshot(request);
+    if (!videoSrc) {
+        return new Response('Missing url parameter', { status: 400 });
     }
     
-    // Add new redirect endpoint
-    if (url.pathname === '/redirect') {
-        const videoSrc = url.searchParams.get('url');
-        const format = url.searchParams.get('format')?.toLowerCase() || 'jpg';
-        
-        if (!videoSrc) {
-            return new Response('Missing url parameter', { status: 400 });
-        }
-        
-        if (format !== 'jpg' && format !== 'gif') {
-            return new Response('Format must be either jpg or gif', { status: 400 });
-        }
-        
-        try {
-            const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
-            const redirectUrl = `/images/${format === 'jpg' ? jpgFilename : gifFilename}`;
-            
-            return new Response(null, {
-                status: 302,
-                headers: { 'Location': redirectUrl }
-            });
-        } catch (error: unknown) {
-            if (error instanceof Error) {
-                return new Response(JSON.stringify({ error: error.message }), {
-                    status: 500,
-                    headers: { 'Content-Type': 'application/json' }
-                });
-            }
-            return new Response(JSON.stringify({ error: 'Unknown error' }), {
-                status: 500,
-                headers: { 'Content-Type': 'application/json' }
-            });
-        }
+    if (!isValidFormat(format)) {
+        return new Response('Format must be either jpg or gif', { status: 400 });
     }
     
-    // Handle snapshot requests
-    if (url.pathname === '/snapshot') {
-        const videoSrc = url.searchParams.get('url');
+    try {
+        const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
+        const redirectUrl = `/images/${format === 'jpg' ? jpgFilename : gifFilename}`;
         
-        if (!videoSrc) {
-            return new Response('Missing url parameter', { status: 400 });
-        }
-        
-        try {
-            const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
-            const jpgUrl = `${PUBLIC_URL}/images/${jpgFilename}`;
-            const gifUrl = `${PUBLIC_URL}/images/${gifFilename}`;
-            return new Response(JSON.stringify({ 
-                jpgUrl,
-                gifUrl
-            }), {
-                headers: { 'Content-Type': 'application/json' }
-            });
-        } catch (error: unknown) {
-            if (error instanceof Error) {
-                return new Response(JSON.stringify({ error: error.message }), {
-                    status: 500,
-                    headers: { 'Content-Type': 'application/json' }
-                });
-            }
-            return new Response(JSON.stringify({ error: 'Unknown error' }), {
-                status: 500,
-                headers: { 'Content-Type': 'application/json' }
-            });
-        }
+        return new Response(null, {
+            status: 302,
+            headers: { 'Location': redirectUrl }
+        });
+    } catch (error: unknown) {
+        return createErrorResponse(error);
+    }
+}
+
+/**
+ * Handles the main snapshot endpoint for webcam captures
+ * @param url - The URL object containing search parameters
+ * @returns Response with JSON containing image URLs or error
+ */
+async function handleSnapshotEndpoint(url: URL): Promise<Response> {
+    const videoSrc = url.searchParams.get('url');
+    
+    if (!videoSrc) {
+        return new Response('Missing url parameter', { status: 400 });
     }
     
-    // Serve static images
-    if (url.pathname.startsWith('/images/')) {
-        const filename = url.pathname.replace('/images/', '');
-        try {
-            const file = await Deno.readFile(join(SNAPSHOTS_PATH, filename));
-            const contentType = filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
-            return new Response(file, {
-                headers: { 'Content-Type': contentType }
-            });
-        } catch (error) {
-            return new Response('Image not found', { status: 404 });
-        }
+    try {
+        const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
+        const response: SnapshotUrls = {
+            jpgUrl: `${PUBLIC_URL}/images/${jpgFilename}`,
+            gifUrl: `${PUBLIC_URL}/images/${gifFilename}`
+        };
+        
+        return new Response(JSON.stringify(response), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (error: unknown) {
+        return createErrorResponse(error);
     }
-    
-    // Default route
+}
+
+/**
+ * Serves static image files from the snapshots directory
+ * @param filename - The filename to serve
+ * @returns Response with the image file or 404 error
+ */
+async function handleStaticImageEndpoint(filename: string): Promise<Response> {
+    try {
+        const file = await Deno.readFile(join(SNAPSHOTS_PATH, filename));
+        const contentType = filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
+        
+        return new Response(file, {
+            headers: { 'Content-Type': contentType }
+        });
+    } catch (_error) {
+        return new Response('Image not found', { status: 404 });
+    }
+}
+
+/**
+ * Handles the root endpoint with service information
+ * @returns Response with service documentation
+ */
+function handleRootEndpoint(): Response {
     return new Response(
         'Webcam Snapshot Service\n\n' +
         'Available endpoints:\n\n' +
@@ -263,9 +292,58 @@ Deno.serve({ port: PORT }, async (request: Request) => {
             headers: { 'Content-Type': 'text/plain' }
         }
     );
-});
+}
+
+/**
+ * Main HTTP request handler that routes requests to appropriate endpoints
+ * @param request - The incoming HTTP request
+ * @returns Promise<Response> - The HTTP response
+ */
+function handleRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    
+    // Handle YouTube snapshot requests
+    if (url.pathname.startsWith('/youtube-snapshot')) {
+        return handleYouTubeSnapshot(request);
+    }
+    
+    // Handle webcam snapshot redirect endpoint
+    if (url.pathname === '/redirect') {
+        return handleRedirectEndpoint(url);
+    }
+    
+    // Handle webcam snapshot endpoint
+    if (url.pathname === '/snapshot') {
+        return handleSnapshotEndpoint(url);
+    }
+    
+    // Serve static images
+    if (url.pathname.startsWith('/images/')) {
+        const filename = url.pathname.replace('/images/', '');
+        return handleStaticImageEndpoint(filename);
+    }
+    
+    // Default route - service information
+    return handleRootEndpoint();
+}
+
+// Ensure snapshots directory exists
+try {
+    await Deno.mkdir(SNAPSHOTS_DIR, { recursive: true });
+    console.log(`Snapshots directory ready: ${SNAPSHOTS_PATH}`);
+} catch (error) {
+    if (!(error instanceof Deno.errors.AlreadyExists)) {
+        console.error('Failed to create snapshots directory:', error);
+        throw error;
+    }
+}
+
+// Start the HTTP server
+Deno.serve({ port: PORT }, handleRequest);
 
 // Run cleanup every hour
-setInterval(cleanupOldSnapshots, 60 * 60 * 1000);
+setInterval(cleanupOldSnapshots, CLEANUP_INTERVAL_MS);
 
-console.log(`Server running on port ${PORT}`);
+console.log(`Webcam Snapshot Service running on port ${PORT}`);
+console.log(`Public URL: ${PUBLIC_URL}`);
+console.log(`Snapshots directory: ${SNAPSHOTS_PATH}`);
