@@ -22,7 +22,7 @@ try {
 }
 
 // Function to extract video ID from YouTube URL
-function extractYouTubeVideoId(url: string): string | null {
+export function extractYouTubeVideoId(url: string): string | null {
     const patterns = [
         /(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/,
         /youtube\.com\/embed\/([^&\n?#]+)/,
@@ -214,7 +214,7 @@ async function getYouTubeThumbnail(videoId: string, timestamp: string): Promise<
 }
 
 // Clean up old snapshots (keep last 100)
-async function cleanupOldSnapshots() {
+export async function cleanupOldSnapshots() {
     try {
         const files = [];
         for await (const entry of Deno.readDir(SNAPSHOTS_DIR)) {
