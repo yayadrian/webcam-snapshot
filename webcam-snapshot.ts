@@ -137,7 +137,7 @@ async function extractFramesDirectly(videoPath: string, jpgPath: string, gifPath
 }
 
 // Clean up old snapshots (keep last 100)
-async function cleanupOldSnapshots() {
+export async function cleanupOldSnapshots() {
     try {
         const files = [];
         for await (const entry of Deno.readDir(SNAPSHOTS_PATH)) {
@@ -158,32 +158,32 @@ async function cleanupOldSnapshots() {
     }
 }
 
-// Start the HTTP server
-Deno.serve({ port: PORT }, async (request: Request) => {
+// HTTP request handler (exported for testability)
+export async function handleWebcamRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    
+
     // Handle YouTube snapshot requests
     if (url.pathname.startsWith('/youtube-snapshot')) {
         return handleYouTubeSnapshot(request);
     }
-    
+
     // Add new redirect endpoint
     if (url.pathname === '/redirect') {
         const videoSrc = url.searchParams.get('url');
         const format = url.searchParams.get('format')?.toLowerCase() || 'jpg';
-        
+
         if (!videoSrc) {
             return new Response('Missing url parameter', { status: 400 });
         }
-        
+
         if (format !== 'jpg' && format !== 'gif') {
             return new Response('Format must be either jpg or gif', { status: 400 });
         }
-        
+
         try {
             const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
             const redirectUrl = `/images/${format === 'jpg' ? jpgFilename : gifFilename}`;
-            
+
             return new Response(null, {
                 status: 302,
                 headers: { 'Location': redirectUrl }
@@ -201,20 +201,20 @@ Deno.serve({ port: PORT }, async (request: Request) => {
             });
         }
     }
-    
+
     // Handle snapshot requests
     if (url.pathname === '/snapshot') {
         const videoSrc = url.searchParams.get('url');
-        
+
         if (!videoSrc) {
             return new Response('Missing url parameter', { status: 400 });
         }
-        
+
         try {
             const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
             const jpgUrl = `${PUBLIC_URL}/images/${jpgFilename}`;
             const gifUrl = `${PUBLIC_URL}/images/${gifFilename}`;
-            return new Response(JSON.stringify({ 
+            return new Response(JSON.stringify({
                 jpgUrl,
                 gifUrl
             }), {
@@ -233,7 +233,7 @@ Deno.serve({ port: PORT }, async (request: Request) => {
             });
         }
     }
-    
+
     // Serve static images
     if (url.pathname.startsWith('/images/')) {
         const filename = url.pathname.replace('/images/', '');
@@ -247,7 +247,7 @@ Deno.serve({ port: PORT }, async (request: Request) => {
             return new Response('Image not found', { status: 404 });
         }
     }
-    
+
     // Default route
     return new Response(
         'Webcam Snapshot Service\n\n' +
@@ -258,14 +258,17 @@ Deno.serve({ port: PORT }, async (request: Request) => {
         '   /snapshot?url=https://camsecure.co/HLS/swanagecamlifeboat.m3u8\n\n' +
         '2. YouTube Snapshots:\n' +
         '   /youtube-snapshot?url=YOUR_YOUTUBE_URL\n' +
-        '   /youtube-snapshot/redirect?url=YOUR_YOUTUBE_URL&format=jpg\n', 
+        '   /youtube-snapshot/redirect?url=YOUR_YOUTUBE_URL&format=jpg\n',
         {
             headers: { 'Content-Type': 'text/plain' }
         }
     );
-});
+}
 
-// Run cleanup every hour
-setInterval(cleanupOldSnapshots, 60 * 60 * 1000);
-
-console.log(`Server running on port ${PORT}`);
+// Start the HTTP server
+if (import.meta.main) {
+    Deno.serve({ port: PORT }, handleWebcamRequest);
+    // Run cleanup every hour
+    setInterval(cleanupOldSnapshots, 60 * 60 * 1000);
+    console.log(`Server running on port ${PORT}`);
+}
