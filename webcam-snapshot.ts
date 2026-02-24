@@ -81,57 +81,88 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
     const jpgPath = join(SNAPSHOTS_PATH, jpgFilename);
     const gifPath = join(SNAPSHOTS_PATH, gifFilename);
     
+    // Temp file for capturing video segment from HLS stream
+    const tempVideoPath = join(SNAPSHOTS_PATH, `temp-${timestamp}.ts`);
+
     try {
-        // Try direct HLS stream capture for JPG
-        console.log('Capturing JPG directly from stream');
-        const jpgFfmpeg = new Deno.Command('ffmpeg', {
+        // Step 1: Capture video segment from HLS stream to a temp file
+        console.log(`Downloading ${GIF_CONFIG.duration}s video segment from stream...`);
+        const captureFfmpeg = new Deno.Command('ffmpeg', {
             args: [
-                '-loglevel', 'warning',
+                '-loglevel', 'info',
                 '-timeout', '30000000',  // 30 second timeout for connection
                 '-i', videoSrc,          // Use HLS URL directly
-                '-vframes', '1',         // Get just one frame
+                '-t', String(GIF_CONFIG.duration),
+                '-c', 'copy',            // Copy codec, no re-encoding
+                '-y',
+                tempVideoPath
+            ],
+            stderr: "piped"
+        });
+
+        const captureResult = await captureFfmpeg.output();
+        const captureStderr = new TextDecoder().decode(captureResult.stderr);
+        if (!captureResult.success) {
+            console.error('FFmpeg capture error:', captureStderr);
+            throw new Error('Failed to capture video segment from stream');
+        }
+        console.log('Video segment captured successfully');
+
+        // Step 2: Extract JPG from the temp file
+        console.log('Extracting JPG from captured segment...');
+        const jpgFfmpeg = new Deno.Command('ffmpeg', {
+            args: [
+                '-loglevel', 'info',
+                '-i', tempVideoPath,
+                '-vframes', '1',
                 '-f', 'image2',
                 '-y',
                 jpgPath
             ],
             stderr: "piped"
         });
-        
-        const jpgResult = await jpgFfmpeg.output();
-        if (!jpgResult.success) {
-            const jpgError = new TextDecoder().decode(jpgResult.stderr);
-            console.error('FFmpeg JPG Error:', jpgError);
-            throw new Error('Failed to capture JPG snapshot');
-        }
-        
-        // Try direct HLS stream capture for GIF
-        console.log('Capturing GIF directly from stream');
+
+        // Step 3: Generate palette-optimized GIF from the temp file
+        console.log('Generating palette-optimized GIF...');
         const gifFfmpeg = new Deno.Command('ffmpeg', {
             args: [
-                '-loglevel', 'warning',
-                '-timeout', '30000000',   // 30 second timeout
-                '-i', videoSrc,           // Use HLS URL directly
-                '-t', String(GIF_CONFIG.duration),
+                '-loglevel', 'info',
+                '-i', tempVideoPath,
                 '-filter_complex', gifFilterComplex(),
                 '-y',
                 gifPath
             ],
             stderr: "piped"
         });
-        
-        const gifResult = await gifFfmpeg.output();
+
+        // Run JPG and GIF extraction in parallel (both read from local file)
+        const [jpgResult, gifResult] = await Promise.all([
+            jpgFfmpeg.output(),
+            gifFfmpeg.output()
+        ]);
+
+        if (!jpgResult.success) {
+            const jpgError = new TextDecoder().decode(jpgResult.stderr);
+            console.error('FFmpeg JPG error:', jpgError);
+            throw new Error('Failed to extract JPG snapshot');
+        }
+
         if (!gifResult.success) {
             const gifError = new TextDecoder().decode(gifResult.stderr);
-            console.error('FFmpeg GIF Error:', gifError);
-            throw new Error('Failed to capture GIF snapshot');
+            console.error('FFmpeg GIF error:', gifError);
+            throw new Error('Failed to generate GIF snapshot');
         }
-        
+
+        console.log('JPG and GIF created successfully');
         return { jpgFilename, gifFilename };
     } catch (error: unknown) {
         if (error instanceof Error) {
             throw new Error(`Failed to process video: ${error.message}`);
         }
         throw new Error('Failed to process video: Unknown error');
+    } finally {
+        // Clean up temp video file
+        try { await Deno.remove(tempVideoPath); } catch { /* ignore */ }
     }
 }
 
