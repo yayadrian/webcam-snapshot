@@ -17,6 +17,7 @@ ENV IS_DOCKER=true
 COPY deno.json .
 COPY webcam-snapshot.ts .
 COPY youtube-snapshot.ts .
+COPY gif-config.ts .
 COPY import_map.json .
 
 # Cache the dependencies

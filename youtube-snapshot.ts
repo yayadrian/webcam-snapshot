@@ -116,8 +116,8 @@ async function takeYouTubeSnapshot(videoUrl: string): Promise<{jpgFilename: stri
             // Create animated GIF from the end of the downloaded segment
             const ffmpegGifSnapshot = new Deno.Command('ffmpeg', {
                 args: [
-                    '-i', tempVideoFilename,
                     '-sseof', `-${GIF_CONFIG.duration}.0`,
+                    '-i', tempVideoFilename,
                     '-t', String(GIF_CONFIG.duration),
                     '-filter_complex', gifFilterComplex(),
                     '-y',
