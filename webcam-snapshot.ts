@@ -11,6 +11,47 @@ interface Console {
 // Configure environment variables
 const PORT = parseInt(Deno.env.get("PORT") || "3000");
 const PUBLIC_URL = Deno.env.get("PUBLIC_URL") || `http://localhost:${PORT}`;
+
+// CORS: Allow any yayproject.com domain (including subdomains)
+function getAllowedOrigin(request: Request): string | null {
+    const origin = request.headers.get("Origin");
+    if (!origin) return null;
+    try {
+        const url = new URL(origin);
+        if (url.hostname === "yayproject.com" || url.hostname.endsWith(".yayproject.com")) {
+            return origin;
+        }
+    } catch {
+        // Invalid origin URL
+    }
+    return null;
+}
+
+function corsHeaders(request: Request): Record<string, string> {
+    const allowedOrigin = getAllowedOrigin(request);
+    if (!allowedOrigin) return {};
+    return {
+        "Access-Control-Allow-Origin": allowedOrigin,
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Vary": "Origin",
+    };
+}
+
+function addCorsHeaders(response: Response, request: Request): Response {
+    const headers = corsHeaders(request);
+    if (Object.keys(headers).length === 0) return response;
+    const newHeaders = new Headers(response.headers);
+    for (const [key, value] of Object.entries(headers)) {
+        newHeaders.set(key, value);
+    }
+    return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: newHeaders,
+    });
+}
+
 const SNAPSHOTS_DIR = "snapshots";
 // Get current working directory
 const CURRENT_DIR = Deno.cwd();
@@ -161,95 +202,105 @@ async function cleanupOldSnapshots() {
 // Start the HTTP server
 Deno.serve({ port: PORT }, async (request: Request) => {
     const url = new URL(request.url);
-    
+
+    // Handle CORS preflight requests
+    if (request.method === "OPTIONS") {
+        const headers = corsHeaders(request);
+        if (Object.keys(headers).length > 0) {
+            return new Response(null, { status: 204, headers });
+        }
+        return new Response(null, { status: 204 });
+    }
+
     // Handle YouTube snapshot requests
     if (url.pathname.startsWith('/youtube-snapshot')) {
-        return handleYouTubeSnapshot(request);
+        const response = await handleYouTubeSnapshot(request);
+        return addCorsHeaders(response, request);
     }
     
     // Add new redirect endpoint
     if (url.pathname === '/redirect') {
         const videoSrc = url.searchParams.get('url');
         const format = url.searchParams.get('format')?.toLowerCase() || 'jpg';
-        
+
         if (!videoSrc) {
-            return new Response('Missing url parameter', { status: 400 });
+            return addCorsHeaders(new Response('Missing url parameter', { status: 400 }), request);
         }
-        
+
         if (format !== 'jpg' && format !== 'gif') {
-            return new Response('Format must be either jpg or gif', { status: 400 });
+            return addCorsHeaders(new Response('Format must be either jpg or gif', { status: 400 }), request);
         }
-        
+
         try {
             const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
             const redirectUrl = `/images/${format === 'jpg' ? jpgFilename : gifFilename}`;
-            
-            return new Response(null, {
+
+            return addCorsHeaders(new Response(null, {
                 status: 302,
                 headers: { 'Location': redirectUrl }
-            });
+            }), request);
         } catch (error: unknown) {
             if (error instanceof Error) {
-                return new Response(JSON.stringify({ error: error.message }), {
+                return addCorsHeaders(new Response(JSON.stringify({ error: error.message }), {
                     status: 500,
                     headers: { 'Content-Type': 'application/json' }
-                });
+                }), request);
             }
-            return new Response(JSON.stringify({ error: 'Unknown error' }), {
+            return addCorsHeaders(new Response(JSON.stringify({ error: 'Unknown error' }), {
                 status: 500,
                 headers: { 'Content-Type': 'application/json' }
-            });
+            }), request);
         }
     }
-    
+
     // Handle snapshot requests
     if (url.pathname === '/snapshot') {
         const videoSrc = url.searchParams.get('url');
-        
+
         if (!videoSrc) {
-            return new Response('Missing url parameter', { status: 400 });
+            return addCorsHeaders(new Response('Missing url parameter', { status: 400 }), request);
         }
-        
+
         try {
             const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
             const jpgUrl = `${PUBLIC_URL}/images/${jpgFilename}`;
             const gifUrl = `${PUBLIC_URL}/images/${gifFilename}`;
-            return new Response(JSON.stringify({ 
+            return addCorsHeaders(new Response(JSON.stringify({
                 jpgUrl,
                 gifUrl
             }), {
                 headers: { 'Content-Type': 'application/json' }
-            });
+            }), request);
         } catch (error: unknown) {
             if (error instanceof Error) {
-                return new Response(JSON.stringify({ error: error.message }), {
+                return addCorsHeaders(new Response(JSON.stringify({ error: error.message }), {
                     status: 500,
                     headers: { 'Content-Type': 'application/json' }
-                });
+                }), request);
             }
-            return new Response(JSON.stringify({ error: 'Unknown error' }), {
+            return addCorsHeaders(new Response(JSON.stringify({ error: 'Unknown error' }), {
                 status: 500,
                 headers: { 'Content-Type': 'application/json' }
-            });
+            }), request);
         }
     }
-    
+
     // Serve static images
     if (url.pathname.startsWith('/images/')) {
         const filename = url.pathname.replace('/images/', '');
         try {
             const file = await Deno.readFile(join(SNAPSHOTS_PATH, filename));
             const contentType = filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
-            return new Response(file, {
+            return addCorsHeaders(new Response(file, {
                 headers: { 'Content-Type': contentType }
-            });
+            }), request);
         } catch (error) {
-            return new Response('Image not found', { status: 404 });
+            return addCorsHeaders(new Response('Image not found', { status: 404 }), request);
         }
     }
-    
+
     // Default route
-    return new Response(
+    return addCorsHeaders(new Response(
         'Webcam Snapshot Service\n\n' +
         'Available endpoints:\n\n' +
         '1. Webcam Snapshots:\n' +
@@ -258,11 +309,11 @@ Deno.serve({ port: PORT }, async (request: Request) => {
         '   /snapshot?url=https://camsecure.co/HLS/swanagecamlifeboat.m3u8\n\n' +
         '2. YouTube Snapshots:\n' +
         '   /youtube-snapshot?url=YOUR_YOUTUBE_URL\n' +
-        '   /youtube-snapshot/redirect?url=YOUR_YOUTUBE_URL&format=jpg\n', 
+        '   /youtube-snapshot/redirect?url=YOUR_YOUTUBE_URL&format=jpg\n',
         {
             headers: { 'Content-Type': 'text/plain' }
         }
-    );
+    ), request);
 });
 
 // Run cleanup every hour
