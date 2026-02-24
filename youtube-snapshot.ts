@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import { join } from "std/path/mod.ts";
+import { GIF_CONFIG, gifFilterComplex, gifScaleFilter } from "./gif-config.ts";
 
 interface Console {
     log(...data: unknown[]): void;
@@ -68,7 +69,7 @@ async function takeYouTubeSnapshot(videoUrl: string): Promise<{jpgFilename: stri
                     '--output', tempVideoFilename,
                     '--live-from-start', // For live streams, start from beginning of available segment
                     '--downloader', 'ffmpeg', // Use ffmpeg as the downloader for live streams
-                    '--downloader-args', 'ffmpeg:-ss 0 -t 3', // Only get 3 seconds from start of available segment
+                    '--downloader-args', `ffmpeg:-ss 0 -t ${GIF_CONFIG.duration + 2}`, // Get enough video for GIF duration plus buffer
                     '--force-overwrites',
                     '--ignore-no-formats-error',
                     '--ignore-errors',
@@ -112,13 +113,13 @@ async function takeYouTubeSnapshot(videoUrl: string): Promise<{jpgFilename: stri
                 stderr: "piped"
             });
 
-            // Create a 1-second GIF starting from near the end
+            // Create animated GIF from the end of the downloaded segment
             const ffmpegGifSnapshot = new Deno.Command('ffmpeg', {
                 args: [
                     '-i', tempVideoFilename,
-                    '-sseof', '-1.0',         // Start 1 second before the end
-                    '-t', '1',                // Get 1 second of video (or whatever is available)
-                    '-vf', 'fps=10,scale=320:-1:flags=lanczos',
+                    '-sseof', `-${GIF_CONFIG.duration}.0`,
+                    '-t', String(GIF_CONFIG.duration),
+                    '-filter_complex', gifFilterComplex(),
                     '-y',
                     join(SNAPSHOTS_DIR, gifFilename)
                 ],
@@ -196,7 +197,7 @@ async function getYouTubeThumbnail(videoId: string, timestamp: string): Promise<
     const ffmpegStaticGif = new Deno.Command('ffmpeg', {
         args: [
             '-i', join(SNAPSHOTS_DIR, jpgFilename),
-            '-vf', 'scale=320:-1:flags=lanczos',
+            '-vf', gifScaleFilter(),
             '-y',
             join(SNAPSHOTS_DIR, gifFilename)
         ],
