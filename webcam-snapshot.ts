@@ -2,6 +2,7 @@
 
 import { join } from "std/path/mod.ts";
 import { handleYouTubeSnapshot } from "./youtube-snapshot.ts";
+import { GIF_CONFIG, gifFilterComplex } from "./gif-config.ts";
 
 interface Console {
     log(...data: unknown[]): void;
@@ -110,8 +111,8 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
                 '-loglevel', 'warning',
                 '-timeout', '30000000',   // 30 second timeout
                 '-i', videoSrc,           // Use HLS URL directly
-                '-t', '1',                // Get 1 second of video
-                '-vf', 'fps=10,scale=320:-1:flags=lanczos',
+                '-t', String(GIF_CONFIG.duration),
+                '-filter_complex', gifFilterComplex(),
                 '-y',
                 gifPath
             ],
@@ -161,8 +162,8 @@ async function extractFramesDirectly(videoPath: string, jpgPath: string, gifPath
         args: [
             '-f', 'mpegts',
             '-i', videoPath,
-            '-t', '1',
-            '-vf', 'fps=10,scale=320:-1:flags=lanczos',
+            '-t', String(GIF_CONFIG.duration),
+            '-filter_complex', gifFilterComplex(),
             '-y',
             gifPath
         ],
