@@ -60,14 +60,14 @@ async function takeYouTubeSnapshot(videoUrl: string): Promise<{jpgFilename: stri
             args: [
                 '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 '--output', tempVideoFilename,
-                '--live-from-start',
                 '--downloader', 'ffmpeg',
-                '--downloader-args', `ffmpeg:-ss 0 -t ${GIF_CONFIG.duration + 2}`,
+                '--downloader-args', `ffmpeg:-t ${GIF_CONFIG.duration + 2}`,
                 '--force-overwrites',
                 '--ignore-no-formats-error',
                 '--ignore-errors',
                 '--retries', '3',
                 '--fragment-retries', '3',
+                '--socket-timeout', '15',
                 videoUrl
             ],
             stderr: "piped",
@@ -96,8 +96,8 @@ async function takeYouTubeSnapshot(videoUrl: string): Promise<{jpgFilename: stri
         // Extract last frame as JPG using FFmpeg
         const ffmpegJpgSnapshot = new Deno.Command('ffmpeg', {
             args: [
-                '-i', tempVideoFilename,
                 '-sseof', '-0.1',
+                '-i', tempVideoFilename,
                 '-vframes', '1',
                 '-f', 'image2',
                 '-y',

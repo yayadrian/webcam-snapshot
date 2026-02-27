@@ -231,6 +231,41 @@ async function cleanupOldSnapshots() {
     }
 }
 
+// Get recent snapshot pairs (jpg + gif) from both snapshot directories
+async function getRecentSnapshots(): Promise<{jpgUrl: string, gifUrl: string, name: string}[]> {
+    const jpgs = new Map<string, string>(); // base name -> jpg url
+    const gifs = new Map<string, string>(); // base name -> gif url
+
+    // Read webcam snapshots
+    try {
+        for await (const entry of Deno.readDir(SNAPSHOTS_PATH)) {
+            if (!entry.isFile || !entry.name.startsWith('snapshot-') || entry.name.startsWith('temp-')) continue;
+            const base = entry.name.replace(/\.(jpg|gif)$/, '');
+            if (entry.name.endsWith('.jpg')) jpgs.set(base, `/images/${entry.name}`);
+            if (entry.name.endsWith('.gif')) gifs.set(base, `/images/${entry.name}`);
+        }
+    } catch { /* directory may not exist */ }
+
+    // Read YouTube snapshots
+    try {
+        for await (const entry of Deno.readDir('youtube-snapshots')) {
+            if (!entry.isFile || !entry.name.startsWith('youtube-') || entry.name.startsWith('temp')) continue;
+            const base = entry.name.replace(/\.(jpg|gif)$/, '');
+            if (entry.name.endsWith('.jpg')) jpgs.set(base, `/youtube-snapshot/images/${entry.name}`);
+            if (entry.name.endsWith('.gif')) gifs.set(base, `/youtube-snapshot/images/${entry.name}`);
+        }
+    } catch { /* directory may not exist */ }
+
+    // Pair up jpgs with their gifs, sorted newest first
+    const pairs: {jpgUrl: string, gifUrl: string, name: string}[] = [];
+    for (const [base, jpgUrl] of jpgs) {
+        const gifUrl = gifs.get(base);
+        if (gifUrl) pairs.push({ jpgUrl, gifUrl, name: base });
+    }
+    pairs.sort((a, b) => b.name.localeCompare(a.name));
+    return pairs.slice(0, 50);
+}
+
 // Start the HTTP server
 Deno.serve({ port: PORT }, async (request: Request) => {
     const url = new URL(request.url);
@@ -331,21 +366,73 @@ Deno.serve({ port: PORT }, async (request: Request) => {
         }
     }
 
-    // Default route
-    return addCorsHeaders(new Response(
-        'Webcam Snapshot Service\n\n' +
-        'Available endpoints:\n\n' +
-        '1. Webcam Snapshots:\n' +
-        '   /snapshot?url=YOUR_WEBCAM_URL\n' +
-        '   /redirect?url=YOUR_WEBCAM_URL&format=jpg\n\n' +
-        '   /snapshot?url=https://camsecure.co/HLS/swanagecamlifeboat.m3u8\n\n' +
-        '2. YouTube Snapshots:\n' +
-        '   /youtube-snapshot?url=YOUR_YOUTUBE_URL\n' +
-        '   /youtube-snapshot/redirect?url=YOUR_YOUTUBE_URL&format=jpg\n',
-        {
-            headers: { 'Content-Type': 'text/plain' }
-        }
-    ), request);
+    // Default route - HTML homepage with recent snapshots
+    const snapshots = await getRecentSnapshots();
+    const tiles = snapshots.map(s =>
+        `<div class="tile"><img src="${s.jpgUrl}" loading="lazy" alt="${s.name}" data-gif="${s.gifUrl}"></div>`
+    ).join('');
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Webcam Snapshot Service</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: monospace; background: #000; color: #fff; }
+  .info { padding: 2rem; }
+  .info h1 { margin-bottom: 1rem; }
+  .info pre { white-space: pre-wrap; line-height: 1.6; opacity: 0.8; }
+  .grid { display: flex; flex-wrap: wrap; }
+  .tile { width: 25%; }
+  .tile img { display: block; width: 100%; height: auto; }
+  @media (max-width: 800px) { .tile { width: 50%; } }
+</style>
+</head>
+<body>
+<div class="info">
+  <h1>Webcam Snapshot Service</h1>
+  <pre>
+Available endpoints:
+
+1. Webcam Snapshots:
+   /snapshot?url=YOUR_WEBCAM_URL
+   /redirect?url=YOUR_WEBCAM_URL&format=jpg
+
+   Examples:
+   /snapshot?url=https://camsecure.co/HLS/swanagecamlifeboat.m3u8
+   /snapshot?url=https://camsecure.co/HLS/leicesterair.m3u8
+   /snapshot?url=https://camsecure.co/HLS/swanage.m3u8
+   /snapshot?url=https://camsecure.co/HLS/salterns.m3u8
+
+2. YouTube Snapshots:
+   /youtube-snapshot?url=YOUR_YOUTUBE_URL
+   /youtube-snapshot/redirect?url=YOUR_YOUTUBE_URL&format=jpg
+
+   Examples:
+   /youtube-snapshot?url=https://www.youtube.com/watch?v=EqeMbj6I5r0
+   /youtube-snapshot?url=https://www.youtube.com/watch?v=LErLYhpJOZY
+   /youtube-snapshot?url=https://www.youtube.com/watch?v=u4UZ4UvZXrg
+   /youtube-snapshot?url=https://www.youtube.com/watch?v=ydYDqZQpim8
+  </pre>
+</div>
+${snapshots.length > 0 ? `<div class="grid">${tiles}</div>` : ''}
+<script>
+document.querySelectorAll('.tile').forEach(tile => {
+  const img = tile.querySelector('img');
+  const jpgSrc = img.src;
+  const gifSrc = img.dataset.gif;
+  tile.addEventListener('mouseenter', () => { img.src = gifSrc; });
+  tile.addEventListener('mouseleave', () => { img.src = jpgSrc; });
+});
+</script>
+</body>
+</html>`;
+
+    return addCorsHeaders(new Response(html, {
+        headers: { 'Content-Type': 'text/html' }
+    }), request);
 });
 
 // Run cleanup every hour
