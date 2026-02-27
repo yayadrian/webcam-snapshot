@@ -48,111 +48,107 @@ async function takeYouTubeSnapshot(videoUrl: string): Promise<{jpgFilename: stri
     // Create timestamp for filenames
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     
-    // Try the thumbnail method first as it's more reliable
+    // Use yt-dlp video download for live/recent snapshots and animated GIFs
+    const tempVideoFilename = join(SNAPSHOTS_DIR, `temp_segment-${timestamp}.mp4`);
+    const jpgFilename = `youtube-${videoId}-${timestamp}.jpg`;
+    const gifFilename = `youtube-${videoId}-${timestamp}.gif`;
+
     try {
-        console.log('Using direct thumbnail method first');
-        return await getYouTubeThumbnail(videoId, timestamp);
-    } catch (thumbnailError) {
-        console.error('Thumbnail method failed, falling back to video download:', thumbnailError);
-        
-        // Fall back to video download method if thumbnail fails
-        const tempVideoFilename = join(SNAPSHOTS_DIR, `temp_segment-${timestamp}.mp4`);
-        const jpgFilename = `youtube-${videoId}-${timestamp}.jpg`;
-        const gifFilename = `youtube-${videoId}-${timestamp}.gif`;
+        // Use yt-dlp to download a short segment of the video
+        console.log('Downloading video segment using yt-dlp');
+        const ytdlp = new Deno.Command('yt-dlp', {
+            args: [
+                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                '--output', tempVideoFilename,
+                '--live-from-start',
+                '--downloader', 'ffmpeg',
+                '--downloader-args', `ffmpeg:-ss 0 -t ${GIF_CONFIG.duration + 2}`,
+                '--force-overwrites',
+                '--ignore-no-formats-error',
+                '--ignore-errors',
+                '--retries', '3',
+                '--fragment-retries', '3',
+                videoUrl
+            ],
+            stderr: "piped",
+            stdout: "piped"
+        });
 
+        const ytdlpResult = await ytdlp.output();
+        const ytdlpOutput = new TextDecoder().decode(ytdlpResult.stdout);
+        const ytdlpError = new TextDecoder().decode(ytdlpResult.stderr);
+
+        // Check if file exists and has content
+        let fileExists = false;
         try {
-            // Use yt-dlp to download a short segment of the video
-            console.log('Downloading video segment using yt-dlp');
-            const ytdlp = new Deno.Command('yt-dlp', {
-                args: [
-                    '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', // Best MP4 format
-                    '--output', tempVideoFilename,
-                    '--live-from-start', // For live streams, start from beginning of available segment
-                    '--downloader', 'ffmpeg', // Use ffmpeg as the downloader for live streams
-                    '--downloader-args', `ffmpeg:-ss 0 -t ${GIF_CONFIG.duration + 2}`, // Get enough video for GIF duration plus buffer
-                    '--force-overwrites',
-                    '--ignore-no-formats-error',
-                    '--ignore-errors',
-                    '--retries', '3',                     // Reduce retry attempts from default 10 to 3
-                    '--fragment-retries', '3',            // Reduce fragment retry attempts to 3
-                    videoUrl
-                ],
-                stderr: "piped",
-                stdout: "piped"
-            });
-            
-            const ytdlpResult = await ytdlp.output();
-            const ytdlpOutput = new TextDecoder().decode(ytdlpResult.stdout);
-            const ytdlpError = new TextDecoder().decode(ytdlpResult.stderr);
-            
-            // Check if file exists and has content
-            let fileExists = false;
-            try {
-                const fileInfo = await Deno.stat(tempVideoFilename);
-                fileExists = fileInfo.size > 0;
-            } catch (e) {
-                fileExists = false;
-            }
-            
-            if (!ytdlpResult.success || !fileExists) {
-                console.error('yt-dlp Error:', ytdlpError);
-                console.log('yt-dlp Output:', ytdlpOutput);
-                throw new Error('Failed to download video segment');
-            }
-            
-            // Extract last frame as JPG using FFmpeg
-            const ffmpegJpgSnapshot = new Deno.Command('ffmpeg', {
-                args: [
-                    '-i', tempVideoFilename,
-                    '-sseof', '-0.1',         // Seek to 0.1 seconds before the end
-                    '-vframes', '1',
-                    '-f', 'image2',
-                    '-y',
-                    join(SNAPSHOTS_DIR, jpgFilename)
-                ],
-                stderr: "piped"
-            });
+            const fileInfo = await Deno.stat(tempVideoFilename);
+            fileExists = fileInfo.size > 0;
+        } catch (_e) {
+            fileExists = false;
+        }
 
-            // Create animated GIF from the end of the downloaded segment
-            const ffmpegGifSnapshot = new Deno.Command('ffmpeg', {
-                args: [
-                    '-sseof', `-${GIF_CONFIG.duration}.0`,
-                    '-i', tempVideoFilename,
-                    '-t', String(GIF_CONFIG.duration),
-                    '-filter_complex', gifFilterComplex(),
-                    '-y',
-                    join(SNAPSHOTS_DIR, gifFilename)
-                ],
-                stderr: "piped"
-            });
+        if (!ytdlpResult.success || !fileExists) {
+            console.error('yt-dlp Error:', ytdlpError);
+            console.log('yt-dlp Output:', ytdlpOutput);
+            throw new Error('Failed to download video segment');
+        }
 
-            const [jpgResult, gifResult] = await Promise.all([
-                ffmpegJpgSnapshot.output(),
-                ffmpegGifSnapshot.output()
-            ]);
-            
-            if (!jpgResult.success || !gifResult.success) {
-                // Log FFmpeg errors for debugging
-                const jpgError = new TextDecoder().decode(jpgResult.stderr);
-                const gifError = new TextDecoder().decode(gifResult.stderr);
-                console.error('FFmpeg JPG Error:', jpgError);
-                console.error('FFmpeg GIF Error:', gifError);
-                throw new Error('Failed to create snapshots');
-            }
-            
-            return { jpgFilename, gifFilename };
-        } catch (videoError) {
-            console.error('Video download method also failed:', videoError);
+        // Extract last frame as JPG using FFmpeg
+        const ffmpegJpgSnapshot = new Deno.Command('ffmpeg', {
+            args: [
+                '-i', tempVideoFilename,
+                '-sseof', '-0.1',
+                '-vframes', '1',
+                '-f', 'image2',
+                '-y',
+                join(SNAPSHOTS_DIR, jpgFilename)
+            ],
+            stderr: "piped"
+        });
+
+        // Create animated GIF from the end of the downloaded segment
+        const ffmpegGifSnapshot = new Deno.Command('ffmpeg', {
+            args: [
+                '-sseof', `-${GIF_CONFIG.duration}.0`,
+                '-i', tempVideoFilename,
+                '-t', String(GIF_CONFIG.duration),
+                '-filter_complex', gifFilterComplex(),
+                '-y',
+                join(SNAPSHOTS_DIR, gifFilename)
+            ],
+            stderr: "piped"
+        });
+
+        const [jpgResult, gifResult] = await Promise.all([
+            ffmpegJpgSnapshot.output(),
+            ffmpegGifSnapshot.output()
+        ]);
+
+        if (!jpgResult.success || !gifResult.success) {
+            const jpgError = new TextDecoder().decode(jpgResult.stderr);
+            const gifError = new TextDecoder().decode(gifResult.stderr);
+            console.error('FFmpeg JPG Error:', jpgError);
+            console.error('FFmpeg GIF Error:', gifError);
+            throw new Error('Failed to create snapshots');
+        }
+
+        return { jpgFilename, gifFilename };
+    } catch (videoError) {
+        console.error('Video download failed, falling back to thumbnail:', videoError);
+
+        // Fall back to thumbnail method if video download fails
+        try {
+            return await getYouTubeThumbnail(videoId, timestamp);
+        } catch (thumbnailError) {
+            console.error('Thumbnail fallback also failed:', thumbnailError);
             throw new Error('All snapshot methods failed');
-        } finally {
-            // Clean up temporary file
-            try {
-                await Deno.remove(tempVideoFilename).catch(() => {
-                    // Ignore errors from file not existing
-                });
-            } catch (error) {
-                console.error('Failed to remove temporary file:', error);
-            }
+        }
+    } finally {
+        // Clean up temporary file
+        try {
+            await Deno.remove(tempVideoFilename).catch(() => {});
+        } catch (_error) {
+            // Ignore cleanup errors
         }
     }
 }
