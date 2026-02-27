@@ -263,7 +263,7 @@ async function getRecentSnapshots(): Promise<{jpgUrl: string, gifUrl: string, na
         if (gifUrl) pairs.push({ jpgUrl, gifUrl, name: base });
     }
     pairs.sort((a, b) => b.name.localeCompare(a.name));
-    return pairs.slice(0, 50);
+    return pairs.slice(0, 24);
 }
 
 // Start the HTTP server
