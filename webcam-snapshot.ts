@@ -14,7 +14,7 @@ const PORT = parseInt(Deno.env.get("PORT") || "3000");
 const PUBLIC_URL = Deno.env.get("PUBLIC_URL") || `http://localhost:${PORT}`;
 
 // CORS: Allow any yayproject.com domain (including subdomains)
-function getAllowedOrigin(request: Request): string | null {
+export function getAllowedOrigin(request: Request): string | null {
     const origin = request.headers.get("Origin");
     if (!origin) return null;
     try {
@@ -28,7 +28,7 @@ function getAllowedOrigin(request: Request): string | null {
     return null;
 }
 
-function corsHeaders(request: Request): Record<string, string> {
+export function corsHeaders(request: Request): Record<string, string> {
     const allowedOrigin = getAllowedOrigin(request);
     if (!allowedOrigin) return {};
     return {
@@ -39,7 +39,7 @@ function corsHeaders(request: Request): Record<string, string> {
     };
 }
 
-function addCorsHeaders(response: Response, request: Request): Response {
+export function addCorsHeaders(response: Response, request: Request): Response {
     const headers = corsHeaders(request);
     if (Object.keys(headers).length === 0) return response;
     const newHeaders = new Headers(response.headers);
