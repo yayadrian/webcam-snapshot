@@ -41,7 +41,7 @@ Deno.test("extractYouTubeVideoId - random text returns null", () => {
   assertEquals(extractYouTubeVideoId("not a url at all"), null);
 });
 
-// Thumbnail fallback tests using fetch stubs
+// Thumbnail fallback tests using fetch and Deno.Command stubs
 
 function stubFetch(responses: Map<string, { ok: boolean; status: number; body: Uint8Array }>) {
   const originalFetch = globalThis.fetch;
@@ -56,6 +56,26 @@ function stubFetch(responses: Map<string, { ok: boolean; status: number; body: U
   return () => { globalThis.fetch = originalFetch; };
 }
 
+// Stub Deno.Command so tests don't require ffmpeg to be installed
+function stubDenoCommand() {
+  const OriginalCommand = Deno.Command;
+  // deno-lint-ignore no-explicit-any
+  (Deno as any).Command = class {
+    constructor(_cmd: string, _opts?: Deno.CommandOptions) {}
+    output(): Promise<Deno.CommandOutput> {
+      return Promise.resolve({
+        success: true,
+        code: 0,
+        stdout: new Uint8Array(),
+        stderr: new Uint8Array(),
+        signal: null,
+      });
+    }
+  };
+  // deno-lint-ignore no-explicit-any
+  return () => { (Deno as any).Command = OriginalCommand; };
+}
+
 Deno.test("getYouTubeThumbnail - skips placeholder-sized live/maxres, uses hqdefault", async () => {
   const smallPlaceholder = new Uint8Array(1000); // <5KB placeholder
   const validImage = new Uint8Array(10000);      // >5KB real image
@@ -67,13 +87,15 @@ Deno.test("getYouTubeThumbnail - skips placeholder-sized live/maxres, uses hqdef
     ["https://img.youtube.com/vi/testid123/hqdefault.jpg", { ok: true, status: 200, body: validImage }],
   ]);
 
-  const restore = stubFetch(responses);
+  const restoreFetch = stubFetch(responses);
+  const restoreCommand = stubDenoCommand();
   try {
     const result = await getYouTubeThumbnail("testid123", "test-timestamp");
     assertEquals(result.jpgFilename, "youtube-testid123-test-timestamp.jpg");
     assertEquals(result.gifFilename, "youtube-testid123-test-timestamp.gif");
   } finally {
-    restore();
+    restoreFetch();
+    restoreCommand();
     // Clean up test files
     await Deno.remove("youtube-snapshots/youtube-testid123-test-timestamp.jpg").catch(() => {});
     await Deno.remove("youtube-snapshots/youtube-testid123-test-timestamp.gif").catch(() => {});
@@ -90,12 +112,14 @@ Deno.test("getYouTubeThumbnail - accepts small hqdefault without size check", as
     ["https://img.youtube.com/vi/smallid/hqdefault.jpg", { ok: true, status: 200, body: smallButValid }],
   ]);
 
-  const restore = stubFetch(responses);
+  const restoreFetch = stubFetch(responses);
+  const restoreCommand = stubDenoCommand();
   try {
     const result = await getYouTubeThumbnail("smallid", "test-ts");
     assertEquals(result.jpgFilename, "youtube-smallid-test-ts.jpg");
   } finally {
-    restore();
+    restoreFetch();
+    restoreCommand();
     await Deno.remove("youtube-snapshots/youtube-smallid-test-ts.jpg").catch(() => {});
     await Deno.remove("youtube-snapshots/youtube-smallid-test-ts.gif").catch(() => {});
   }
