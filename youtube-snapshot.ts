@@ -12,6 +12,7 @@ interface Console {
 const PORT = parseInt(Deno.env.get("PORT") || "3000");
 const PUBLIC_URL = Deno.env.get("PUBLIC_URL") || `http://localhost:${PORT}`;
 const SNAPSHOTS_DIR = "youtube-snapshots";
+const YT_COOKIES_FILE = Deno.env.get("YT_COOKIES_FILE") || "";
 
 // Ensure snapshots directory exists
 try {
@@ -56,20 +57,36 @@ async function takeYouTubeSnapshot(videoUrl: string): Promise<{jpgFilename: stri
     try {
         // Use yt-dlp to download a short segment of the video
         console.log('Downloading video segment using yt-dlp');
+        const ytdlpArgs = [
+            '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            '--output', tempVideoFilename,
+            '--downloader', 'ffmpeg',
+            '--downloader-args', `ffmpeg:-t ${GIF_CONFIG.duration + 2}`,
+            '--force-overwrites',
+            '--ignore-no-formats-error',
+            '--ignore-errors',
+            '--retries', '3',
+            '--fragment-retries', '3',
+            '--socket-timeout', '15',
+            '--extractor-args', 'youtube:player_client=web_creator,mediaconnect',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        ];
+
+        // Add cookies file if configured
+        if (YT_COOKIES_FILE) {
+            try {
+                await Deno.stat(YT_COOKIES_FILE);
+                ytdlpArgs.push('--cookies', YT_COOKIES_FILE);
+                console.log('Using cookies file:', YT_COOKIES_FILE);
+            } catch {
+                console.warn('Cookies file not found:', YT_COOKIES_FILE);
+            }
+        }
+
+        ytdlpArgs.push(videoUrl);
+
         const ytdlp = new Deno.Command('yt-dlp', {
-            args: [
-                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                '--output', tempVideoFilename,
-                '--downloader', 'ffmpeg',
-                '--downloader-args', `ffmpeg:-t ${GIF_CONFIG.duration + 2}`,
-                '--force-overwrites',
-                '--ignore-no-formats-error',
-                '--ignore-errors',
-                '--retries', '3',
-                '--fragment-retries', '3',
-                '--socket-timeout', '15',
-                videoUrl
-            ],
+            args: ytdlpArgs,
             stderr: "piped",
             stdout: "piped"
         });
@@ -164,29 +181,43 @@ async function getYouTubeThumbnail(videoId: string, timestamp: string): Promise<
     const gifFilename = `youtube-${videoId}-${timestamp}.gif`;
     
     // Try to download the thumbnail
+    // YouTube returns HTTP 200 with a small default placeholder for missing thumbnails,
+    // so we validate that the image is large enough to be a real thumbnail (>5KB).
+    const MIN_THUMBNAIL_SIZE = 5000;
     let response;
-    try {
-        // Try live thumbnail first
-        response = await fetch(thumbnailUrl);
-        if (!response.ok) {
-            console.log('Live thumbnail not available, trying maxresdefault');
-            response = await fetch(fallbackThumbnailUrl);
-            
+    let imageData: Uint8Array | null = null;
+
+    const thumbnailUrls = [
+        { url: thumbnailUrl, label: 'live' },
+        { url: fallbackThumbnailUrl, label: 'maxresdefault' },
+        { url: finalFallbackUrl, label: 'hqdefault' },
+    ];
+
+    for (const { url: thumbUrl, label } of thumbnailUrls) {
+        try {
+            response = await fetch(thumbUrl);
             if (!response.ok) {
-                console.log('Maxres thumbnail not available, trying hqdefault');
-                response = await fetch(finalFallbackUrl);
-                
-                if (!response.ok) {
-                    throw new Error('Failed to download any thumbnail');
-                }
+                console.log(`${label} thumbnail returned HTTP ${response.status}, skipping`);
+                continue;
             }
+            const data = new Uint8Array(await response.arrayBuffer());
+            if (data.length < MIN_THUMBNAIL_SIZE) {
+                console.log(`${label} thumbnail too small (${data.length} bytes), likely a placeholder`);
+                continue;
+            }
+            console.log(`Using ${label} thumbnail (${data.length} bytes)`);
+            imageData = data;
+            break;
+        } catch (e) {
+            console.log(`${label} thumbnail fetch failed:`, e instanceof Error ? e.message : String(e));
         }
-    } catch (error) {
-        throw new Error(`Failed to fetch YouTube thumbnail: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (!imageData) {
+        throw new Error('Failed to download any valid thumbnail');
     }
     
     // Write the downloaded thumbnail as JPG
-    const imageData = new Uint8Array(await response.arrayBuffer());
     await Deno.writeFile(join(SNAPSHOTS_DIR, jpgFilename), imageData);
     
     // Create a simple static GIF from the JPG
