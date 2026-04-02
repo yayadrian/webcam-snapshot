@@ -1,9 +1,13 @@
 FROM denoland/deno:latest
 
-# Install ffmpeg and yt-dlp
+# TARGETARCH is provided automatically by Docker BuildKit (amd64, arm64, etc.)
+ARG TARGETARCH
+
+# Install ffmpeg and yt-dlp (select the correct binary for the target architecture)
 RUN apt-get update && \
     apt-get install -y ffmpeg curl && \
-    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp && \
+    YTDLP_BINARY=$([ "$TARGETARCH" = "arm64" ] && echo "yt-dlp_linux_aarch64" || echo "yt-dlp_linux") && \
+    curl -fSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_BINARY} -o /usr/local/bin/yt-dlp --retry 3 --retry-delay 5 && \
     chmod a+rx /usr/local/bin/yt-dlp && \
     apt-get clean
 
