@@ -31,5 +31,9 @@ RUN deno cache --import-map=import_map.json webcam-snapshot.ts
 RUN mkdir snapshots
 RUN mkdir youtube-snapshots
 
+# Optional: mount a cookies file at /app/cookies.txt for YouTube authentication
+# Use: docker run -v /path/to/cookies.txt:/app/cookies.txt -e YT_COOKIES_FILE=/app/cookies.txt ...
+ENV YT_COOKIES_FILE=""
+
 # Start the application
 CMD ["deno", "task", "start"] 
