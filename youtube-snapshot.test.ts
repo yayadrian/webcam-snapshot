@@ -49,7 +49,7 @@ function stubFetch(responses: Map<string, { ok: boolean; status: number; body: U
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const stub = responses.get(url);
     if (stub) {
-      return Promise.resolve(new Response(stub.body, { status: stub.status }));
+      return Promise.resolve(new Response(stub.body as unknown as BodyInit, { status: stub.status }));
     }
     return Promise.resolve(new Response("Not found", { status: 404 }));
   };
