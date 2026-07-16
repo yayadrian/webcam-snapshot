@@ -54,6 +54,58 @@ export function addCorsHeaders(response: Response, request: Request): Response {
 }
 
 const SNAPSHOTS_DIR = "snapshots";
+const MIN_JPEG_WIDTH = 16;
+const MAX_JPEG_WIDTH = 1920;
+
+/**
+ * Read the requested JPEG width. `w` and `scale` remain supported as aliases
+ * for clients that already send them. An omitted width preserves the source
+ * resolution.
+ */
+export function getJpegWidth(url: URL): number | null | undefined {
+    const value = url.searchParams.get("width") ??
+        url.searchParams.get("w") ??
+        url.searchParams.get("scale");
+
+    if (value === null) return undefined;
+    if (!/^\d+$/.test(value)) return null;
+
+    const width = Number(value);
+    if (width < MIN_JPEG_WIDTH || width > MAX_JPEG_WIDTH) return null;
+    return width;
+}
+
+export function jpegScaleFilter(width: number): string {
+    return `scale=${width}:-2`;
+}
+
+export function buildJpegFfmpegArgs(inputPath: string, outputPath: string, jpegWidth?: number): string[] {
+    const args = [
+        '-loglevel', 'info',
+        '-i', inputPath
+    ];
+    if (jpegWidth !== undefined) {
+        args.push('-vf', jpegScaleFilter(jpegWidth));
+    }
+    args.push(
+        '-vframes', '1',
+        '-f', 'image2',
+        '-y',
+        outputPath
+    );
+    return args;
+}
+
+export function createImageResponse(file: Uint8Array<ArrayBuffer>, filename: string): Response {
+    const contentType = filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
+    return new Response(file, {
+        headers: {
+            'Content-Type': contentType,
+            'Content-Length': String(file.byteLength)
+        }
+    });
+}
+
 // Get current working directory
 const CURRENT_DIR = Deno.cwd();
 // Create absolute path for snapshots
@@ -69,7 +121,7 @@ try {
 }
 
 // Function to take snapshot from video stream
-async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gifFilename: string}> {
+async function takeSnapshot(videoSrc: string, jpegWidth?: number): Promise<{jpgFilename: string, gifFilename: string}> {
     console.log('Loading video stream...', videoSrc);
     
     // Create timestamp for filenames
@@ -111,14 +163,7 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
         // Step 2: Extract JPG from the temp file
         console.log('Extracting JPG from captured segment...');
         const jpgFfmpeg = new Deno.Command('ffmpeg', {
-            args: [
-                '-loglevel', 'info',
-                '-i', tempVideoPath,
-                '-vframes', '1',
-                '-f', 'image2',
-                '-y',
-                jpgPath
-            ],
+            args: buildJpegFfmpegArgs(tempVideoPath, jpgPath, jpegWidth),
             stderr: "piped"
         });
 
@@ -167,17 +212,23 @@ async function takeSnapshot(videoSrc: string): Promise<{jpgFilename: string, gif
 }
 
 // Function to extract frames directly from the input file
-async function extractFramesDirectly(videoPath: string, jpgPath: string, gifPath: string): Promise<void> {
+async function extractFramesDirectly(videoPath: string, jpgPath: string, gifPath: string, jpegWidth?: number): Promise<void> {
     // Extract JPG directly
+    const jpgArgs = [
+        '-f', 'mpegts',
+        '-i', videoPath
+    ];
+    if (jpegWidth !== undefined) {
+        jpgArgs.push('-vf', jpegScaleFilter(jpegWidth));
+    }
+    jpgArgs.push(
+        '-vframes', '1',
+        '-f', 'image2',
+        '-y',
+        jpgPath
+    );
     const jpgExtract = new Deno.Command('ffmpeg', {
-        args: [
-            '-f', 'mpegts',
-            '-i', videoPath,
-            '-vframes', '1',
-            '-f', 'image2',
-            '-y',
-            jpgPath
-        ],
+        args: jpgArgs,
         stderr: "piped"
     });
     
@@ -289,6 +340,7 @@ Deno.serve({ port: PORT }, async (request: Request) => {
     if (url.pathname === '/redirect') {
         const videoSrc = url.searchParams.get('url');
         const format = url.searchParams.get('format')?.toLowerCase() || 'jpg';
+        const jpegWidth = getJpegWidth(url);
 
         if (!videoSrc) {
             return addCorsHeaders(new Response('Missing url parameter', { status: 400 }), request);
@@ -298,8 +350,12 @@ Deno.serve({ port: PORT }, async (request: Request) => {
             return addCorsHeaders(new Response('Format must be either jpg or gif', { status: 400 }), request);
         }
 
+        if (jpegWidth === null) {
+            return addCorsHeaders(new Response('Width must be an integer between 16 and 1920', { status: 400 }), request);
+        }
+
         try {
-            const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
+            const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc, jpegWidth);
             const redirectUrl = `/images/${format === 'jpg' ? jpgFilename : gifFilename}`;
 
             return addCorsHeaders(new Response(null, {
@@ -323,13 +379,18 @@ Deno.serve({ port: PORT }, async (request: Request) => {
     // Handle snapshot requests
     if (url.pathname === '/snapshot') {
         const videoSrc = url.searchParams.get('url');
+        const jpegWidth = getJpegWidth(url);
 
         if (!videoSrc) {
             return addCorsHeaders(new Response('Missing url parameter', { status: 400 }), request);
         }
 
+        if (jpegWidth === null) {
+            return addCorsHeaders(new Response('Width must be an integer between 16 and 1920', { status: 400 }), request);
+        }
+
         try {
-            const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc);
+            const { jpgFilename, gifFilename } = await takeSnapshot(videoSrc, jpegWidth);
             const jpgUrl = `${PUBLIC_URL}/images/${jpgFilename}`;
             const gifUrl = `${PUBLIC_URL}/images/${gifFilename}`;
             return addCorsHeaders(new Response(JSON.stringify({
@@ -357,10 +418,7 @@ Deno.serve({ port: PORT }, async (request: Request) => {
         const filename = url.pathname.replace('/images/', '');
         try {
             const file = await Deno.readFile(join(SNAPSHOTS_PATH, filename));
-            const contentType = filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
-            return addCorsHeaders(new Response(file, {
-                headers: { 'Content-Type': contentType }
-            }), request);
+            return addCorsHeaders(createImageResponse(file, filename), request);
         } catch (error) {
             return addCorsHeaders(new Response('Image not found', { status: 404 }), request);
         }
@@ -397,8 +455,8 @@ Deno.serve({ port: PORT }, async (request: Request) => {
 Available endpoints:
 
 1. Webcam Snapshots:
-   /snapshot?url=YOUR_WEBCAM_URL
-   /redirect?url=YOUR_WEBCAM_URL&format=jpg
+   /snapshot?url=YOUR_WEBCAM_URL&width=320
+   /redirect?url=YOUR_WEBCAM_URL&format=jpg&width=320
 
    Examples:
    /snapshot?url=https://camsecure.co/HLS/swanagecamlifeboat.m3u8
