@@ -4,9 +4,84 @@ import {
 } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import {
   addCorsHeaders,
+  buildJpegFfmpegArgs,
   corsHeaders,
+  createImageResponse,
   getAllowedOrigin,
+  getJpegWidth,
+  jpegScaleFilter,
 } from "./webcam-snapshot.ts";
+
+// --- Unit tests for JPEG scaling ---
+
+Deno.test("getJpegWidth preserves source resolution when omitted", () => {
+  assertEquals(getJpegWidth(new URL("http://localhost/redirect")), undefined);
+});
+
+Deno.test("getJpegWidth accepts width and legacy aliases", () => {
+  assertEquals(getJpegWidth(new URL("http://localhost/redirect?width=320")), 320);
+  assertEquals(getJpegWidth(new URL("http://localhost/redirect?w=240")), 240);
+  assertEquals(getJpegWidth(new URL("http://localhost/redirect?scale=160")), 160);
+});
+
+Deno.test("getJpegWidth rejects invalid or unsafe widths", () => {
+  assertEquals(getJpegWidth(new URL("http://localhost/redirect?width=0")), null);
+  assertEquals(getJpegWidth(new URL("http://localhost/redirect?width=320.5")), null);
+  assertEquals(getJpegWidth(new URL("http://localhost/redirect?width=99999")), null);
+});
+
+Deno.test("jpegScaleFilter preserves aspect ratio with an even height", () => {
+  assertEquals(jpegScaleFilter(320), "scale=320:-2");
+});
+
+Deno.test("buildJpegFfmpegArgs preserves source resolution when width is omitted", () => {
+  assertEquals(buildJpegFfmpegArgs("input.ts", "output.jpg"), [
+    "-loglevel",
+    "info",
+    "-i",
+    "input.ts",
+    "-vframes",
+    "1",
+    "-f",
+    "image2",
+    "-y",
+    "output.jpg",
+  ]);
+});
+
+Deno.test("buildJpegFfmpegArgs adds scale filter for an explicit width", () => {
+  assertEquals(buildJpegFfmpegArgs("input.ts", "output.jpg", 320), [
+    "-loglevel",
+    "info",
+    "-i",
+    "input.ts",
+    "-vf",
+    "scale=320:-2",
+    "-vframes",
+    "1",
+    "-f",
+    "image2",
+    "-y",
+    "output.jpg",
+  ]);
+});
+
+Deno.test("createImageResponse includes JPEG type and exact content length", async () => {
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+  const response = createImageResponse(jpeg, "snapshot.jpg");
+
+  assertEquals(response.status, 200);
+  assertEquals(response.headers.get("Content-Type"), "image/jpeg");
+  assertEquals(response.headers.get("Content-Length"), "4");
+  assertEquals(new Uint8Array(await response.arrayBuffer()), jpeg);
+});
+
+Deno.test("createImageResponse preserves the GIF content type", () => {
+  const response = createImageResponse(new Uint8Array([0x47]), "snapshot.gif");
+
+  assertEquals(response.headers.get("Content-Type"), "image/gif");
+  assertEquals(response.headers.get("Content-Length"), "1");
+});
 
 // --- Unit tests for getAllowedOrigin ---
 

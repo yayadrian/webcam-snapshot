@@ -5,6 +5,7 @@ A tiny Deno HTTP service that takes snapshots (JPG + 1s GIF) from webcam/HLS str
 ## Features
 
 - HLS/webcam snapshots: JPG + 1s GIF
+- Optional device-friendly JPEG scaling
 - YouTube snapshots: fast thumbnail path with yt-dlp + ffmpeg fallback
 - Static file serving for generated images
 - Redirect endpoints for direct image links
@@ -45,9 +46,10 @@ The server will listen on PORT and create these folders if they don’t exist:
 ### Endpoints
 
 - Webcam
-	- GET `/snapshot?url=<HLS_or_media_URL>` → JSON `{ jpgUrl, gifUrl }`
-	- GET `/redirect?url=<URL>&format=jpg|gif` → 302 to latest image
+	- GET `/snapshot?url=<HLS_or_media_URL>&width=320` → JSON `{ jpgUrl, gifUrl }`
+	- GET `/redirect?url=<URL>&format=jpg|gif&width=320` → 302 to latest image
 	- Static: GET `/images/<filename>`
+	- `width` controls JPEG width while preserving aspect ratio. Without it, the source resolution is preserved. `w` and `scale` are accepted as aliases.
 
 - YouTube
 	- GET `/youtube-snapshot?url=<youtube_url>` → JSON `{ jpgUrl, gifUrl }`
@@ -57,7 +59,7 @@ The server will listen on PORT and create these folders if they don’t exist:
 Example (webcam/HLS):
 
 ```text
-http://localhost:3000/snapshot?url=https://camsecure.co/HLS/swanagecamlifeboat.m3u8
+http://localhost:3000/redirect?url=https://camsecure.co/HLS/swanagecamlifeboat.m3u8&format=jpg&width=320
 ```
 
 ## Run with Docker
@@ -96,6 +98,8 @@ docker run \
 Notes:
 
 - When running behind a proxy or non-localhost, set `PUBLIC_URL` so returned URLs are externally valid.
+- The application serves plain HTTP. If it is behind a CDN or reverse proxy, that layer must also allow port 80 without redirecting requests to HTTPS.
+- Static image responses include `Content-Length` so constrained clients can allocate their download buffer before reading the JPEG.
 - `Dockerfile.youtube` is experimental/legacy; use the main `Dockerfile` for the server.
 
 ## License
