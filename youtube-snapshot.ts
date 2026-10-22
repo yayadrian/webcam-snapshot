@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { join } from "std/path/mod.ts";
+import { join } from "@std/path";
 import { GIF_CONFIG, gifFilterComplex, gifScaleFilter } from "./gif-config.ts";
 
 interface Console {
