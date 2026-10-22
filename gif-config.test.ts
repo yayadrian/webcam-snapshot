@@ -1,4 +1,4 @@
-import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
+import { assertEquals } from "@std/assert";
 import { GIF_CONFIG, gifFilterComplex, gifScaleFilter } from "./gif-config.ts";
 
 Deno.test("GIF_CONFIG has expected values", () => {

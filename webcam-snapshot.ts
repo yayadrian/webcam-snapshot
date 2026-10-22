@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { join } from "std/path/mod.ts";
+import { join } from "@std/path";
 import { handleYouTubeSnapshot } from "./youtube-snapshot.ts";
 import { GIF_CONFIG, gifFilterComplex } from "./gif-config.ts";
 
